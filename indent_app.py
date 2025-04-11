@@ -3,11 +3,14 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import json
+from io import StringIO
 
 # --- Google Sheets Setup ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name(
-    "C:\\Users\\arish\\OneDrive\\Boteco Restaurants\\Indent App Project\\indentappproject-0d38dc5b7987.json", scope)
+json_creds = st.secrets["gcp_service_account"]
+creds_dict = json.load(StringIO(json_creds))
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open("Indent Log").sheet1  # Your sheet name
 reference_sheet = client.open("Indent Log").worksheet("reference")  # Reference sheet with item names and purchase units
