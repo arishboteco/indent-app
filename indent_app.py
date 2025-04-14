@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import gspread
-# *** ADD FPDF Import ***
+# *** ADDED/Corrected Imports for Type Hints and FPDF ***
+from gspread import Client, Spreadsheet, Worksheet #<-- IMPORT ADDED
 from fpdf import FPDF
 # *** ***
 from oauth2client.service_account import ServiceAccountCredentials
@@ -9,7 +10,7 @@ from datetime import datetime, date
 import json
 from PIL import Image
 from collections import Counter
-# *** ADD Type Hinting Imports ***
+# *** ADDED/Corrected Imports for Type Hints ***
 from typing import Any, Dict, List, Tuple, Optional
 # *** ***
 
@@ -31,9 +32,11 @@ try:
     json_creds_data: Any = st.secrets["gcp_service_account"]
     creds_dict: Dict[str, Any] = json.loads(json_creds_data) if isinstance(json_creds_data, str) else json_creds_data
     creds: ServiceAccountCredentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    # Note: Type hint used here, ensure Client is imported above
     client: Client = gspread.authorize(creds)
     # Access worksheets with detailed error handling
     try:
+        # Note: Type hints used here, ensure Spreadsheet/Worksheet imported above
         indent_log_spreadsheet: Spreadsheet = client.open("Indent Log")
         sheet: Worksheet = indent_log_spreadsheet.sheet1
         reference_sheet: Worksheet = indent_log_spreadsheet.worksheet("reference")
@@ -41,11 +44,13 @@ try:
     except gspread.exceptions.WorksheetNotFound: st.error("Worksheet 'Sheet1' or 'reference' not found."); st.stop()
     except gspread.exceptions.APIError as e: st.error(f"Google API Error accessing sheets: {e}"); st.stop()
 except json.JSONDecodeError: st.error("Error parsing GCP credentials."); st.stop()
-except gspread.exceptions.RequestError as e: st.error(f"Network error connecting to Google: {e}"); st.stop() # Catch network errors here too
+# This except block needs gspread >= 5.0.0 (approx) for RequestError
+except gspread.exceptions.RequestError as e: st.error(f"Network error connecting to Google: {e}"); st.stop()
 except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); st.stop()
 
 
 # --- Reference Data Loading Function (NO CACHING, returns data) ---
+# Note: Type hints used here, ensure Client etc are imported above
 def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
     """Fetches and processes reference data, returns it. Does NOT modify state."""
     try:
@@ -86,6 +91,7 @@ if not master_item_names: st.error("Item list empty/not loaded. Cannot proceed."
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
+    # ... (Same as before) ...
     try:
         all_mrns = sheet.col_values(1); next_number = 1
         if len(all_mrns) > 1:
@@ -101,11 +107,9 @@ def generate_mrn() -> str:
 
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
-    """Generates a PDF summary of the submitted indent."""
+    # ... (Same as before) ...
     pdf = FPDF()
-    pdf.add_page()
-    pdf.set_margins(10, 10, 10)
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
     pdf.cell(95, 7, f"MRN: {data['mrn']}", ln=0); pdf.cell(95, 7, f"Date Required: {data['date']}", ln=1, align='R')
@@ -116,37 +120,19 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     pdf.cell(col_widths['qty'], 7, "Qty", border=1, ln=0, align='C', fill=True)
     pdf.cell(col_widths['unit'], 7, "Unit", border=1, ln=0, align='C', fill=True)
     pdf.cell(col_widths['note'], 7, "Note", border=1, ln=1, align='C', fill=True)
-    pdf.set_font("Helvetica", "", 9)
-    line_height = 6
+    pdf.set_font("Helvetica", "", 9); line_height = 6
     for item, qty, unit, note in data['items']:
-        start_y = pdf.get_y()
-        current_x = pdf.l_margin
-        # Use multi_cell for potentially long fields
-        pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L', ln=3)
-        item_y = pdf.get_y()
-        current_x += col_widths['item']
-        pdf.set_xy(current_x, start_y) # Reset X, keep Y for next cell
-
-        pdf.cell(col_widths['qty'], line_height, str(qty), border='R', ln=0, align='C')
-        qty_y = start_y + line_height # Estimate Y position after cell
-        current_x += col_widths['qty']
-        pdf.set_xy(current_x, start_y)
-
-        pdf.cell(col_widths['unit'], line_height, str(unit), border='R', ln=0, align='C')
-        unit_y = start_y + line_height
-        current_x += col_widths['unit']
-        pdf.set_xy(current_x, start_y)
-
-        pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L', ln=3)
-        note_y = pdf.get_y()
-
-        # Determine max Y position to draw the bottom border correctly
+        start_y = pdf.get_y(); current_x = pdf.l_margin
+        pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L', ln=3); item_y = pdf.get_y()
+        current_x += col_widths['item']; pdf.set_xy(current_x, start_y)
+        pdf.cell(col_widths['qty'], line_height, str(qty), border='R', ln=0, align='C'); qty_y = start_y + line_height
+        current_x += col_widths['qty']; pdf.set_xy(current_x, start_y)
+        pdf.cell(col_widths['unit'], line_height, str(unit), border='R', ln=0, align='C'); unit_y = start_y + line_height
+        current_x += col_widths['unit']; pdf.set_xy(current_x, start_y)
+        pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L', ln=3); note_y = pdf.get_y()
         max_y = max(item_y, qty_y, unit_y, note_y, start_y + line_height)
         pdf.line(pdf.l_margin, max_y, pdf.l_margin + sum(col_widths.values()), max_y)
-        pdf.set_y(max_y) # Move cursor down past the tallest cell + border
-        # pdf.ln(0.1) # Small gap before next row's top border (implicit)
-
-    # Output PDF as bytes
+        pdf.set_y(max_y); pdf.ln(0.1)
     return pdf.output()
 
 
@@ -160,14 +146,12 @@ for i in range(st.session_state.item_count):
     st.session_state.setdefault(f"note_{i}", ""); st.session_state.setdefault(f"unit_display_{i}", "-")
 st.session_state.setdefault('last_dept', None)
 
-
 # --- Callback Function ---
 def update_unit_display(index: int) -> None:
     selected_item = st.session_state.get(f"item_{index}")
     local_map = st.session_state.get('item_to_unit_lower', {})
     unit = local_map.get(selected_item.lower(), "N/A") if selected_item else "-"
     st.session_state[f"unit_display_{index}"] = unit if unit else "-"
-
 
 # --- Header Inputs ---
 DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
@@ -183,8 +167,7 @@ delivery_date = st.date_input("Date Required", value=date.today(), min_value=dat
 col1_btn, col2_btn, col3_btn = st.columns([1, 1, 1])
 with col1_btn:
     if st.button("➕ Add Item"):
-        idx = st.session_state.item_count
-        st.session_state[f"item_{idx}"]=None; st.session_state[f"qty_{idx}"]=1
+        idx = st.session_state.item_count; st.session_state[f"item_{idx}"]=None; st.session_state[f"qty_{idx}"]=1
         st.session_state[f"note_{idx}"]=""; st.session_state[f"unit_display_{idx}"]="-"
         st.session_state.item_count += 1; # IMPLICIT rerun
 with col2_btn:
@@ -203,7 +186,6 @@ with col3_btn:
         st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1)
         st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
         st.rerun()
-
 
 st.markdown("---")
 st.subheader("Enter Items:")
@@ -287,8 +269,7 @@ if st.button("Submit Indent Request", type="primary", use_container_width=True, 
             st.session_state.item_count = 1
             st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1)
             st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
-
-            st.rerun() # Rerun to show success/summary
+            st.rerun()
 
     except Exception as e: st.error(f"Error during submission: {e}"); st.exception(e)
 
@@ -305,10 +286,10 @@ if 'submitted_data_for_summary' in st.session_state:
     st.markdown(f"**Total Submitted Quantity:** {total_submitted_qty}")
     st.markdown("---")
 
-    # --- Generate PDF Data & Download Button (with fix) ---
+    # --- Generate PDF Data & Download Button (with bytes conversion fix) ---
     try:
-        pdf_output = create_indent_pdf(submitted_data)
-        # *** Explicitly convert to bytes ***
+        pdf_output: bytes = create_indent_pdf(submitted_data) # Assuming function returns bytes
+        # Explicitly convert just in case it returns bytearray (safer)
         pdf_bytes_data = bytes(pdf_output)
         st.download_button(
              label="📄 Download Indent PDF",
@@ -319,14 +300,9 @@ if 'submitted_data_for_summary' in st.session_state:
          )
     except Exception as pdf_error:
         st.error(f"Could not generate PDF: {pdf_error}")
-        st.exception(pdf_error) # Show traceback for PDF errors
+        st.exception(pdf_error)
 
 
     if st.button("Start New Indent", key='new_indent_button'):
-        # Clear only the summary data state before rerun
         del st.session_state['submitted_data_for_summary']
         st.rerun()
-
-# --- Optional Full State Debug ---
-# st.sidebar.write("### Session State")
-# st.sidebar.json(st.session_state.to_dict())
