@@ -1,238 +1,67 @@
 import streamlit as st
-import pandas as pd
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, date
-import json
-from PIL import Image
-from collections import Counter
 
-# --- Configuration & Setup ---
-# ... (Same as before) ...
-# Display logo
-try:
-    logo = Image.open("logo.png")
-    st.image(logo, width=200)
-except FileNotFoundError: st.warning("Logo image 'logo.png' not found.")
-except Exception as e: st.warning(f"Could not load logo: {e}")
-# Google Sheets setup
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-try:
-    if "gcp_service_account" not in st.secrets: st.error("Missing GCP credentials!"); st.stop()
-    json_creds_data = st.secrets["gcp_service_account"]
-    creds_dict = json.loads(json_creds_data) if isinstance(json_creds_data, str) else json_creds_data
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    try:
-        indent_log_spreadsheet = client.open("Indent Log")
-        sheet = indent_log_spreadsheet.sheet1
-        reference_sheet = indent_log_spreadsheet.worksheet("reference")
-    except gspread.exceptions.SpreadsheetNotFound: st.error("Spreadsheet 'Indent Log' not found."); st.stop()
-    except gspread.exceptions.WorksheetNotFound: st.error("Worksheet 'Sheet1' or 'reference' not found."); st.stop()
-    except gspread.exceptions.APIError as e: st.error(f"Google API Error: {e}"); st.stop()
-except json.JSONDecodeError: st.error("Error parsing GCP credentials."); st.stop()
-except gspread.exceptions.RequestError as e: st.error(f"Network error connecting to Google: {e}"); st.stop()
-except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); st.stop()
+st.set_page_config(layout="wide") # Use wide layout like original app might
+st.title("Minimal Test Case: Add/Remove Items")
 
+# Initialize item count and potentially the first item's state
+if "minimal_item_count" not in st.session_state:
+    st.session_state.minimal_item_count = 1
+    # Initialize first item state explicitly if needed, otherwise rely on render loop
+    st.session_state["m_input_0"] = ""
+    st.session_state["m_num_0"] = 1
+    st.write("Initialized state.")
 
-# --- Reference Data Loading (NO CACHING) ---
-def get_reference_data(_client):
-    # ... (Same function as before) ...
-    try:
-        # st.write("DEBUG: Fetching reference data from Google Sheet...") # Debug info
-        _reference_sheet = _client.open("Indent Log").worksheet("reference")
-        all_data = _reference_sheet.get_all_values()
-        item_names = []; item_to_unit_lower = {}; processed_items_lower = set(); header_skipped = False
-        for i, row in enumerate(all_data):
-            if not any(str(cell).strip() for cell in row): continue
-            if not header_skipped and i == 0 and ("item" in str(row[0]).lower() or "unit" in str(row[1]).lower()): header_skipped = True; continue
-            if len(row) >= 2:
-                item = str(row[0]).strip(); unit = str(row[1]).strip(); item_lower = item.lower()
-                if item and item_lower not in processed_items_lower:
-                    item_names.append(item); item_to_unit_lower[item_lower] = unit if unit else "N/A"; processed_items_lower.add(item_lower)
-        item_names.sort()
-        # st.write(f"DEBUG: Loaded {len(item_names)} items from sheet.") # Debug
-        return item_names, item_to_unit_lower
-    except Exception as e: st.error(f"Error loading reference data: {e}"); return [], {}
-
-
-# --- Populate State from Loaded Data (Only if state is empty) ---
-if 'master_item_list' not in st.session_state or 'item_to_unit_lower' not in st.session_state:
-     # st.write("DEBUG: Session state for items not found, calling get_reference_data...") # Debug
-     loaded_item_names, loaded_item_to_unit_lower = get_reference_data(client)
-     st.session_state['master_item_list'] = loaded_item_names
-     st.session_state['item_to_unit_lower'] = loaded_item_to_unit_lower
-     # st.write("DEBUG: Populated session state with reference data.") # Debug
-
-master_item_names = st.session_state.get('master_item_list', [])
-item_to_unit_lower = st.session_state.get('item_to_unit_lower', {})
-
-if not master_item_names: st.error("Item list empty/not loaded. Cannot proceed."); st.stop()
-
-
-# --- MRN Generation ---
-def generate_mrn():
-    # ... (Same MRN function as before) ...
-    try:
-        all_mrns = sheet.col_values(1); next_number = 1
-        if len(all_mrns) > 1:
-            last_valid_num = 0
-            for mrn_str in reversed(all_mrns):
-                if mrn_str and mrn_str.startswith("MRN-") and mrn_str[4:].isdigit(): last_valid_num = int(mrn_str[4:]); break
-            if last_valid_num == 0: last_valid_num = max(0, len([v for v in all_mrns if v]) -1)
-            next_number = last_valid_num + 1
-        return f"MRN-{str(next_number).zfill(3)}"
-    except Exception as e: st.error(f"MRN Error: {e}"); return f"MRN-ERR-{datetime.now().strftime('%H%M')}"
-
-
-# --- Streamlit App UI ---
-st.title("Material Indent Form")
-
-# --- Session State Initialization ---
-if "item_count" not in st.session_state: st.session_state.item_count = 1
-for i in range(st.session_state.item_count):
-    st.session_state.setdefault(f"item_{i}", None); st.session_state.setdefault(f"qty_{i}", 1)
-    st.session_state.setdefault(f"note_{i}", ""); st.session_state.setdefault(f"unit_display_{i}", "-") # Keep unit display state
-
-# --- Callback Function (TEMPORARILY COMMENTED OUT) ---
-# def update_unit_display(index):
-#     selected_item = st.session_state.get(f"item_{index}")
-#     local_map = st.session_state.get('item_to_unit_lower', {})
-#     unit = local_map.get(selected_item.lower(), "N/A") if selected_item else "-"
-#     st.session_state[f"unit_display_{index}"] = unit if unit else "-"
-
-
-# --- Header Inputs ---
-dept = st.selectbox("Select Department", ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"],
-                    index=0, key="selected_dept", placeholder="Select department...")
-delivery_date = st.date_input("Date Required", value=date.today(), min_value=date.today(),
-                              format="DD/MM/YYYY", key="selected_date")
+st.write(f"(Current item count: {st.session_state.minimal_item_count})")
 
 # --- Add/Remove Buttons ---
-col1_btn, col2_btn = st.columns(2)
+col1_btn, col2_btn, _ = st.columns([1,1,4]) # Basic columns for buttons
 with col1_btn:
-    if st.button("+ Add Item"):
-        idx = st.session_state.item_count
-        st.session_state[f"item_{idx}"]=None; st.session_state[f"qty_{idx}"]=1
-        st.session_state[f"note_{idx}"]=""; st.session_state[f"unit_display_{idx}"]="-"
-        st.session_state.item_count += 1; st.rerun()
+    if st.button("➕ Add Item"):
+        new_index = st.session_state.minimal_item_count
+        # Initialize state for the NEW row ONLY
+        st.session_state[f"m_input_{new_index}"] = "" # Initialize new item state
+        st.session_state[f"m_num_{new_index}"] = 1
+        st.session_state.minimal_item_count += 1
+        # No rerun needed, button click triggers it
+
 with col2_btn:
-    can_remove = st.session_state.item_count > 1
-    if st.button("- Remove Item", disabled=not can_remove):
-        if can_remove:
-            idx = st.session_state.item_count - 1
-            for prefix in ["item_", "qty_", "note_", "unit_display_"]: st.session_state.pop(f"{prefix}{idx}", None)
-            st.session_state.item_count -= 1; st.rerun()
+     if st.button("➖ Remove Last", disabled=st.session_state.minimal_item_count <= 1):
+        remove_index = st.session_state.minimal_item_count - 1
+        st.session_state.pop(f"m_input_{remove_index}", None) # Remove state for last item
+        st.session_state.pop(f"m_num_{remove_index}", None)
+        st.session_state.minimal_item_count -= 1
+        # No rerun needed
 
 st.markdown("---")
-st.subheader("Enter Items:")
+st.write("**Instructions:** Enter text in 'Field 0'. Click '+ Add Item'. Does the text in 'Field 0' reset?")
+st.write("Then enter text in 'Field 1', click '+ Add Item' again. Does text in 'Field 0' or 'Field 1' reset?")
+st.markdown("---")
 
-# --- Item Input Rows (NO Filtering, NO on_change temporarily) ---
-for i in range(st.session_state.item_count):
-    col1, col2 = st.columns([3, 1])
+
+# --- Render input fields ---
+for i in range(st.session_state.minimal_item_count):
+    # Initialize state using setdefault just in case (shouldn't be needed here if Add/Remove manage it)
+    # Using different default to see if setdefault interferes
+    st.session_state.setdefault(f"m_input_{i}", f"Default Set {i}")
+    st.session_state.setdefault(f"m_num_{i}", i+1)
+
+    col1, col2 = st.columns([3,1]) # Basic columns like original app
     with col1:
-        # Item selection - Callback REMOVED for testing
-        st.selectbox(
-            label=f"Item {i}",
-            options=[""] + master_item_names, # Use full list from state
-            key=f"item_{i}",
-            placeholder="Type or select an item...",
+        st.text_input(
+            label=f"Text Field {i}",
+            key=f"m_input_{i}", # Unique key
             label_visibility="collapsed",
-            # on_change=update_unit_display, # <-- TEMPORARILY REMOVED
-            # args=(i,)
+            placeholder=f"Enter text for item {i}"
         )
-        # Note input
-        st.text_input(f"Note {i}", key=f"note_{i}", placeholder="Special instructions...", label_visibility="collapsed")
     with col2:
-        # Unit Display (will be static "-")
-        st.markdown("**Unit:**")
-        unit_to_display = st.session_state.get(f"unit_display_{i}", "-") # Still reads state, but state won't be updated
-        st.markdown(f"### {unit_to_display}")
-        # Quantity input
-        st.number_input(f"Quantity {i}", min_value=1, step=1, key=f"qty_{i}", label_visibility="collapsed")
-    st.markdown("---")
-
-# --- Immediate Duplicate Check & Feedback ---
-# ... (Duplicate check logic remains the same) ...
-current_selected_items = [st.session_state.get(f"item_{k}") for k in range(st.session_state.item_count) if st.session_state.get(f"item_{k}")]
-item_counts = Counter(current_selected_items); duplicates_found = {item: count for item, count in item_counts.items() if count > 1}
-has_duplicates_in_state = bool(duplicates_found)
-if has_duplicates_in_state:
-    dup_list = ", ".join(duplicates_found.keys()); st.error(f"⚠️ Duplicate items detected: **{dup_list}**. Remove duplicates.")
-
-# --- Pre-Submission Check for Button Disabling ---
-# ... (Button disabling logic remains the same) ...
-has_valid_items = any(st.session_state.get(f"item_{k}") and st.session_state.get(f"qty_{k}", 0) > 0 for k in range(st.session_state.item_count))
-current_dept = st.session_state.get("selected_dept", "")
-submit_disabled = not has_valid_items or has_duplicates_in_state or not current_dept
-tooltip_message = "";
-if not has_valid_items: tooltip_message += "Add item(s). "
-if has_duplicates_in_state: tooltip_message += "Remove duplicates. "
-if not current_dept: tooltip_message += "Select department."
+         st.number_input(
+             label=f"Number {i}",
+             key=f"m_num_{i}", # Unique key
+             label_visibility="collapsed"
+         )
+    st.divider()
 
 
-# --- Final Submission Button ---
 st.markdown("---")
-if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message if submit_disabled else "Submit the current indent"):
-
-    # --- Final Data Collection & Validation ---
-    # ... (Final collection and validation logic remains the same, needs to get unit now) ...
-    items_to_submit_final = []; final_item_names = set(); final_has_duplicates = False
-    local_item_to_unit_lower = st.session_state.get('item_to_unit_lower', {}) # Get map from state
-    for i in range(st.session_state.item_count):
-        selected_item = st.session_state.get(f"item_{i}"); qty = st.session_state.get(f"qty_{i}", 0); note = st.session_state.get(f"note_{i}", "")
-        if selected_item and qty > 0:
-            # *** Lookup unit here as callback is disabled ***
-            purchase_unit = local_item_to_unit_lower.get(selected_item.lower(), "N/A")
-            if selected_item in final_item_names: final_has_duplicates = True; continue
-            final_item_names.add(selected_item); items_to_submit_final.append((selected_item, qty, purchase_unit, note)) # Add looked-up unit
-    if not items_to_submit_final: st.error("No valid items to submit."); st.stop()
-    if final_has_duplicates: st.error("Duplicates detected. Aborted."); st.stop()
-
-
-    # --- Submit to Google Sheets ---
-    try:
-        # ... (Submission logic remains the same) ...
-        mrn = generate_mrn(); timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        current_date_obj = st.session_state.get("selected_date", date.today()); formatted_date = current_date_obj.strftime("%d-%m-%Y")
-        rows_to_add = [[mrn, timestamp, current_dept, formatted_date, item, str(qty), unit, note if note else "N/A"]
-                       for item, qty, unit, note in items_to_submit_final] # Data now includes unit
-        if rows_to_add:
-            with st.spinner(f"Submitting indent {mrn}..."):
-                sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
-            st.session_state['submitted_data_for_summary'] = { 'mrn': mrn, 'dept': current_dept, 'date': formatted_date, 'items': items_to_submit_final }
-            # --- Clean up FORM state ONLY ---
-            keys_to_delete = []
-            keys_to_delete.extend([f"{prefix}{i}" for prefix in ["item_", "qty_", "note_", "unit_display_"] for i in range(st.session_state.item_count)])
-            keys_to_delete.extend(["selected_dept", "selected_date"])
-            for key in keys_to_delete:
-                if key in st.session_state: del st.session_state[key]
-            st.session_state.item_count = 1
-            st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1)
-            st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
-            st.rerun() # Rerun to show success/summary
-
-    except gspread.exceptions.APIError as e: st.error(f"API Error submitting: {e}"); st.exception(e)
-    except Exception as e: st.error(f"Error during submission: {e}"); st.exception(e)
-
-# --- Display Post-Submission Summary ---
-if 'submitted_data_for_summary' in st.session_state:
-    # ... (Post-submission summary display logic remains the same) ...
-    submitted_data = st.session_state['submitted_data_for_summary']
-    st.success(f"Indent submitted successfully! MRN: {submitted_data['mrn']}")
-    st.balloons(); st.markdown("---")
-    st.subheader("Submitted Indent Summary")
-    st.info(f"**MRN:** {submitted_data['mrn']} | **Department:** {submitted_data['dept']} | **Date Required:** {submitted_data['date']}")
-    # Ensure correct columns for display
-    submitted_df = pd.DataFrame(submitted_data['items'], columns=["Item", "Qty", "Unit", "Note"]) # Use correct column names from tuple
-    st.dataframe(submitted_df, hide_index=True, use_container_width=True)
-    total_submitted_qty = sum(item[1] for item in submitted_data['items'])
-    st.markdown(f"**Total Submitted Quantity:** {total_submitted_qty}"); st.markdown("---")
-    if st.button("Start New Indent"):
-        del st.session_state['submitted_data_for_summary']; st.rerun()
-    else: st.stop()
-
-
-# --- Optional Full State Debug ---
-# st.sidebar.write("### Session State")
-# st.sidebar.json(st.session_state.to_dict())
+st.subheader("Current Session State:")
+st.json(st.session_state.to_dict()) # Display the raw state
