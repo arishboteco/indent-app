@@ -1,6 +1,6 @@
 streamlit
 pandas
-gspread
+gspread>=5.0.0 # Specify minimum version known to have RequestError exception
 oauth2client
 Pillow
 fpdf2
