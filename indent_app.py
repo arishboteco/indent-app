@@ -16,16 +16,6 @@ client = gspread.authorize(creds)
 sheet = client.open("Indent Log").sheet1
 reference_sheet = client.open("Indent Log").worksheet("reference")
 
-# Cache the reference data to speed up performance
-@st.cache_data
-def get_reference_data():
-    item_names = reference_sheet.col_values(1)
-    purchase_units = reference_sheet.col_values(2)
-    item_to_unit = dict(zip(item_names, purchase_units))
-    return item_names, item_to_unit
-
-item_names, item_to_unit = get_reference_data()
-
 # MRN Generator
 def generate_mrn():
     records = sheet.get_all_records()
