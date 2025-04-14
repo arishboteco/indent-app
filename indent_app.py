@@ -1,23 +1,28 @@
 import streamlit as st
 
 st.set_page_config(layout="wide")
-st.title("Minimal Test Case - Step 2: Selectbox + Static Options + Callback")
+st.title("Minimal Test Case - Step 3: Selectbox + Options from State + Callback")
+
+# --- Simulate loading data into session state ONCE ---
+if 'test_master_list' not in st.session_state:
+    st.session_state['test_master_list'] = ["Apple", "Banana", "Carrot", "Date", "Eggplant", "Fig"]
+    st.write("Initialized master list in session state.")
+# ---
 
 # Initialize item count
 if "minimal_item_count" not in st.session_state:
     st.session_state.minimal_item_count = 1
     st.session_state["m_select_0"] = None
     st.session_state["m_num_0"] = 1
-    st.session_state["m_cb_status_0"] = "Not triggered" # Initialize callback status state
-    st.write("Initialized state.")
+    st.session_state["m_cb_status_0"] = "Not triggered"
+    # st.write("Initialized row state.") # Less verbose
 
 st.write(f"(Current item count: {st.session_state.minimal_item_count})")
 
 # --- Callback Function ---
 def simple_test_callback(index):
-    # This callback modifies session state, similar to update_unit_display
     st.session_state[f"m_cb_status_{index}"] = f"Triggered for index {index}!"
-    # st.write(f"DEBUG: Callback fired for index {index}") # Uncomment for intense debug
+    # st.write(f"DEBUG: Callback fired for index {index}")
 
 
 # --- Add/Remove Buttons ---
@@ -27,7 +32,7 @@ with col1_btn:
         new_index = st.session_state.minimal_item_count
         st.session_state[f"m_select_{new_index}"] = None
         st.session_state[f"m_num_{new_index}"] = 1
-        st.session_state[f"m_cb_status_{new_index}"] = "Not triggered" # Initialize callback status state
+        st.session_state[f"m_cb_status_{new_index}"] = "Not triggered"
         st.session_state.minimal_item_count += 1
         # No rerun needed
 
@@ -36,7 +41,7 @@ with col2_btn:
         remove_index = st.session_state.minimal_item_count - 1
         st.session_state.pop(f"m_select_{remove_index}", None)
         st.session_state.pop(f"m_num_{remove_index}", None)
-        st.session_state.pop(f"m_cb_status_{remove_index}", None) # Remove callback status state
+        st.session_state.pop(f"m_cb_status_{remove_index}", None)
         st.session_state.minimal_item_count -= 1
         # No rerun needed
 
@@ -45,34 +50,32 @@ st.write("**Instructions:** Select an option in 'Item 0'. Click '+ Add Item'. Do
 st.markdown("---")
 
 # --- Render input fields ---
-STATIC_OPTIONS = ["", "Apple", "Banana", "Carrot", "Date", "Eggplant"]
+# Get the options list from session state
+options_from_state = [""] + st.session_state.get('test_master_list', [])
 
 for i in range(st.session_state.minimal_item_count):
     # Initialize state using setdefault
     st.session_state.setdefault(f"m_select_{i}", None)
     st.session_state.setdefault(f"m_num_{i}", 1)
-    st.session_state.setdefault(f"m_cb_status_{i}", "Not triggered") # Default for callback status
+    st.session_state.setdefault(f"m_cb_status_{i}", "Not triggered")
 
-    col1, col2, col3 = st.columns([3, 1, 2]) # Add column for callback status
+    col1, col2, col3 = st.columns([3, 1, 2])
     with col1:
-        # Use selectbox with on_change added
+        # Use selectbox with options derived from session state
         st.selectbox(
             label=f"Item {i}",
-            options=STATIC_OPTIONS,
+            options=options_from_state, # *** Use list from session state ***
             key=f"m_select_{i}",
             label_visibility="collapsed",
             placeholder="Select an item...",
-            on_change=simple_test_callback, # *** CALLBACK ADDED HERE ***
-            args=(i,) # Pass index to callback
+            on_change=simple_test_callback,
+            args=(i,)
         )
     with col2:
          st.number_input(
-             label=f"Number {i}",
-             key=f"m_num_{i}",
-             label_visibility="collapsed"
+             label=f"Number {i}", key=f"m_num_{i}", label_visibility="collapsed"
          )
     with col3:
-        # Display the status set by the callback
         st.text(f"Cb Status: {st.session_state.get(f'm_cb_status_{i}', 'N/A')}")
 
     st.divider()
@@ -80,4 +83,4 @@ for i in range(st.session_state.minimal_item_count):
 
 st.markdown("---")
 st.subheader("Current Session State:")
-st.json(st.session_state.to_dict()) # Display the raw state
+st.json(st.session_state.to_dict())
