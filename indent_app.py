@@ -1,31 +1,20 @@
 import streamlit as st
 import pandas as pd
 import gspread
-# *** ADDED/Corrected Imports for Type Hints and FPDF ***
 from gspread import Client, Spreadsheet, Worksheet
 from fpdf import FPDF
-# *** ***
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, date
 import json
 from PIL import Image
 from collections import Counter
-# *** ADDED/Corrected Imports for Type Hints ***
 from typing import Any, Dict, List, Tuple, Optional
-# *** ***
 
 # --- Configuration & Setup ---
-
 # Display logo
-try:
-    logo = Image.open("logo.png")
-    st.image(logo, width=200)
-except FileNotFoundError:
-    st.warning("Logo image 'logo.png' not found.")
-except Exception as e:
-    st.warning(f"Could not load logo: {e}")
-
+# ... (same as before) ...
 # Google Sheets setup & Credentials Handling
+# ... (same as before) ...
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 try:
     if "gcp_service_account" not in st.secrets: st.error("Missing GCP credentials!"); st.stop()
@@ -33,7 +22,6 @@ try:
     creds_dict: Dict[str, Any] = json.loads(json_creds_data) if isinstance(json_creds_data, str) else json_creds_data
     creds: ServiceAccountCredentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client: Client = gspread.authorize(creds)
-    # Access worksheets with detailed error handling
     try:
         indent_log_spreadsheet: Spreadsheet = client.open("Indent Log")
         sheet: Worksheet = indent_log_spreadsheet.sheet1 # Log Sheet
@@ -46,49 +34,40 @@ except gspread.exceptions.RequestError as e: st.error(f"Network error connecting
 except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); st.stop()
 
 
-# --- Reference Data Loading Function (NO CACHING, returns data) ---
-# Note: Type hints used here, ensure Client etc are imported above
+# --- Reference Data Loading Function ---
 def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
-    """Fetches and processes reference data, returns it. Does NOT modify state."""
+    # ... (same as before) ...
     try:
         _reference_sheet = _client.open("Indent Log").worksheet("reference")
         all_data: List[List[str]] = _reference_sheet.get_all_values()
-        item_names: List[str] = []
-        item_to_unit_lower: Dict[str, str] = {}
-        processed_items_lower: set[str] = set()
-        header_skipped: bool = False
+        item_names: List[str] = []; item_to_unit_lower: Dict[str, str] = {}
+        processed_items_lower: set[str] = set(); header_skipped: bool = False
         for i, row in enumerate(all_data):
             if not any(str(cell).strip() for cell in row): continue
-            if not header_skipped and i == 0 and ("item" in str(row[0]).lower() or "unit" in str(row[1]).lower()):
-                header_skipped = True; continue
+            if not header_skipped and i == 0 and ("item" in str(row[0]).lower() or "unit" in str(row[1]).lower()): header_skipped = True; continue
             if len(row) >= 2:
                 item: str = str(row[0]).strip(); unit: str = str(row[1]).strip(); item_lower: str = item.lower()
                 if item and item_lower not in processed_items_lower:
                     item_names.append(item); item_to_unit_lower[item_lower] = unit if unit else "N/A"; processed_items_lower.add(item_lower)
         item_names.sort()
         return item_names, item_to_unit_lower
-    except gspread.exceptions.APIError as e:
-        st.error(f"Google Sheets API Error loading reference data: {e}")
-        return [], {}
-    except Exception as e:
-        st.error(f"Unexpected error loading reference data: {e}")
-        return [], {}
+    except gspread.exceptions.APIError as e: st.error(f"API Error loading reference data: {e}"); return [], {}
+    except Exception as e: st.error(f"Error loading reference data: {e}"); return [], {}
 
-# --- Populate State from Loaded Data (Only if state is empty) ---
+# --- Populate State from Loaded Data ---
+# ... (same as before) ...
 if 'master_item_list' not in st.session_state or 'item_to_unit_lower' not in st.session_state:
      loaded_item_names, loaded_item_to_unit_lower = get_reference_data(client)
      st.session_state['master_item_list'] = loaded_item_names
      st.session_state['item_to_unit_lower'] = loaded_item_to_unit_lower
-
 master_item_names = st.session_state.get('master_item_list', [])
 item_to_unit_lower = st.session_state.get('item_to_unit_lower', {})
-
 if not master_item_names: st.error("Item list empty/not loaded. Cannot proceed."); st.stop()
 
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
-    # ... (Same as before) ...
+    # ... (same as before) ...
     try:
         all_mrns = sheet.col_values(1); next_number = 1
         if len(all_mrns) > 1:
@@ -104,7 +83,7 @@ def generate_mrn() -> str:
 
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
-    # ... (Same PDF function as before) ...
+    # ... (Same as before) ...
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
@@ -132,33 +111,53 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     return pdf.output()
 
 
-# --- *** NEW Function to Load Log Data *** ---
+# --- Function to Load and Clean Log Data (Cached) ---
 @st.cache_data(ttl=300) # Cache data for 5 minutes
 def load_indent_log_data() -> pd.DataFrame:
-    """Fetches all records from the main log sheet ('sheet1')
+    """Fetches all records from the main log sheet ('sheet1'), cleans data types,
        and returns data as a Pandas DataFrame. Assumes header row exists."""
     try:
         # st.write("DEBUG: Fetching indent log data from Google Sheet...") # Uncomment for debug
-        # 'sheet' is the global gspread Worksheet object for the log sheet
         records = sheet.get_all_records() # Uses header row to create dict keys
         if not records:
-            # Return an empty DataFrame with expected columns if sheet is empty
-            expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note'] # Adjust if your columns differ
+            expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
             st.info("Indent log sheet appears to be empty.")
             return pd.DataFrame(columns=expected_cols)
 
         df = pd.DataFrame(records)
-        # Basic check for expected columns - adjust names if they differ in your Sheet!
-        expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note'] # Adjust column names EXACTLY as they appear in Sheet1 header
-        if not all(col in df.columns for col in expected_cols):
-            st.warning(f"Log sheet headers may differ from expected. Found: {list(df.columns)}. Expected: {expected_cols}")
-        # st.write(f"DEBUG: Loaded {len(df)} records from indent log.") # Uncomment for debug
+        # --- Data Cleaning ---
+        expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note'] # Adjust EXACTLY to your Sheet1 header
+        missing_cols = [col for col in expected_cols if col not in df.columns]
+        if missing_cols:
+             st.warning(f"Log sheet might be missing expected columns: {', '.join(missing_cols)}. Found: {list(df.columns)}")
+
+        # Convert 'Timestamp' (assuming format like YYYY-MM-DD HH:MM:SS)
+        if 'Timestamp' in df.columns:
+            df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+
+        # Convert 'Date Required' (assuming format DD-MM-YYYY from submission)
+        # *** IMPORTANT: Adjust 'format' if your sheet stores it differently ***
+        if 'Date Required' in df.columns:
+            df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
+
+        # Convert 'Qty' to numeric
+        if 'Qty' in df.columns:
+            # Convert empty strings or non-numeric to NaN, then fill NaN with 0, then convert to int
+            df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
+
+        # Optional: Clean up other columns like stripping whitespace or filling blanks
+        # if 'Department' in df.columns: df['Department'] = df['Department'].str.strip().fillna('Unknown')
+        # if 'Note' in df.columns: df['Note'] = df['Note'].fillna('')
+
+        # --- End Cleaning ---
+        # st.write(f"DEBUG: Loaded and cleaned {len(df)} records.") # Uncomment for debug
         return df
+
     except gspread.exceptions.APIError as e:
         st.error(f"API Error loading indent log: {e}")
         return pd.DataFrame() # Return empty DataFrame on error
     except Exception as e:
-        st.error(f"Error loading indent log data: {e}")
+        st.error(f"Error loading/cleaning indent log data: {e}")
         # st.exception(e) # Uncomment for detailed traceback
         return pd.DataFrame() # Return empty DataFrame on error
 
@@ -171,6 +170,10 @@ tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 # --- TAB 1: New Indent Form ---
 with tab1:
     st.title("Material Indent Form")
+    # ... (All code for Tab 1 remains exactly the same as the previous version) ...
+    # Includes: Session State Init, Callback Def, Header Inputs, Add/Remove/Clear Buttons,
+    # Item Input Rows (with expander, no dropdown filtering), Duplicate Check,
+    # Submit Button logic, Post-Submission Summary display logic
 
     # --- Session State Initialization ---
     if "item_count" not in st.session_state: st.session_state.item_count = 1
@@ -248,12 +251,12 @@ with tab1:
 
     # --- Pre-Submission Check & Button Disabling Info ---
     has_valid_items = any(st.session_state.get(f"item_{k}") and st.session_state.get(f"qty_{k}", 0) > 0 for k in range(st.session_state.item_count))
-    current_dept = st.session_state.get("selected_dept", "")
-    submit_disabled = not has_valid_items or has_duplicates_in_state or not current_dept
+    current_dept_tab1 = st.session_state.get("selected_dept", "") # Use specific var name for clarity
+    submit_disabled = not has_valid_items or has_duplicates_in_state or not current_dept_tab1
     tooltip_message = ""; error_messages = []
     if not has_valid_items: error_messages.append("Add item(s). ")
     if has_duplicates_in_state: error_messages.append("Remove duplicates. ")
-    if not current_dept: error_messages.append("Select department.")
+    if not current_dept_tab1: error_messages.append("Select department.")
     tooltip_message = "".join(error_messages)
 
     st.markdown("---")
@@ -263,6 +266,7 @@ with tab1:
             st.error(f"⚠️ Cannot submit: Duplicate items detected ({dup_list}). Please fix.")
         else:
             st.warning(f"⚠️ Cannot submit: {tooltip_message}")
+
 
     # --- Final Submission Button ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message if submit_disabled else "Submit the current indent", key="submit_indent_tab1"):
@@ -283,20 +287,21 @@ with tab1:
         try:
             mrn = generate_mrn(); timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             current_date_obj = st.session_state.get("selected_date", date.today()); formatted_date = current_date_obj.strftime("%d-%m-%Y")
-            rows_to_add = [[mrn, timestamp, current_dept, formatted_date, item, str(qty), unit, note if note else "N/A"]
+            # Use current_dept_tab1 variable
+            rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"]
                            for item, qty, unit, note in items_to_submit_final]
             if rows_to_add:
                 with st.spinner(f"Submitting indent {mrn}..."):
                     try: sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
                     except gspread.exceptions.APIError as api_error: st.error(f"API Error submitting: {api_error}."); st.stop()
 
-                st.session_state['submitted_data_for_summary'] = { 'mrn': mrn, 'dept': current_dept, 'date': formatted_date, 'items': items_to_submit_final }
-                st.session_state['last_dept'] = current_dept # Remember dept
+                st.session_state['submitted_data_for_summary'] = { 'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': items_to_submit_final }
+                st.session_state['last_dept'] = current_dept_tab1 # Remember dept
 
                 # --- Clean up FORM state ONLY ---
                 keys_to_delete = []
                 keys_to_delete.extend([f"{prefix}{i}" for prefix in ["item_", "qty_", "note_", "unit_display_"] for i in range(st.session_state.item_count)])
-                keys_to_delete.extend(["selected_dept", "selected_date"])
+                keys_to_delete.extend(["selected_dept", "selected_date"]) # Clear current selections
                 for key in keys_to_delete:
                     if key in st.session_state: del st.session_state[key]
                 st.session_state.item_count = 1
@@ -319,7 +324,7 @@ with tab1:
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Quantity:** {total_submitted_qty}"); st.markdown("---")
 
-        # --- Generate PDF Data & Download Button ---
+        # --- Generate PDF Data & Download Button (with bytes conversion fix) ---
         try:
             pdf_output: bytes = create_indent_pdf(submitted_data)
             pdf_bytes_data = bytes(pdf_output)
@@ -341,14 +346,18 @@ with tab2:
     st.subheader("View Past Indent Requests")
 
     # Call the function to load data (uses cache)
-    log_df = load_indent_log_data()
+    log_df_raw = load_indent_log_data() # Renamed variable for clarity
 
-    if log_df.empty:
-        st.info("No indent records found in the log sheet or an error occurred loading data.")
+    if log_df_raw.empty:
+        # Check if it's empty because the sheet is empty or because of an error
+        # (Error message would have been shown by load_indent_log_data)
+        st.info("No indent records found or unable to load data.")
     else:
-        st.info(f"Displaying {len(log_df)} records from the indent log.")
-        # Display the raw data for now. Formatting/filtering comes next.
-        st.dataframe(log_df, use_container_width=True, hide_index=True)
+        # Display basic info for now
+        st.info(f"Loaded {len(log_df_raw)} records from the indent log.")
+        st.markdown("Raw data view (cleaning and filtering next):")
+        # Display the DataFrame (which should have cleaned types now)
+        st.dataframe(log_df_raw, use_container_width=True, hide_index=True)
 
 # --- Optional Full State Debug ---
 # st.sidebar.write("### Session State")
