@@ -36,21 +36,18 @@ def get_reference_data():
         # Get all data from the reference sheet
         all_data = reference_sheet.get_all_values()
         
-        # Skip header if exists (assuming first row is header)
-        data_rows = all_data[1:] if len(all_data) > 1 else all_data
-        
-        # Create mappings, filtering out empty rows
+        # Create mappings
         item_names = []
         item_to_unit = {}
         
-        for row in data_rows:
+        for row in all_data:
             if len(row) >= 2:  # Ensure there are at least 2 columns
                 item = row[0].strip()
                 unit = row[1].strip()
                 if item:  # Only add if item name exists
                     item_names.append(item)
-                    item_to_unit[item] = unit if unit else "N/A"  # Default if unit is empty
-        
+                    item_to_unit[item] = unit
+                    
         # Remove duplicates while preserving order
         seen = set()
         item_names = [x for x in item_names if not (x in seen or seen.add(x))]
@@ -63,11 +60,9 @@ def get_reference_data():
 item_names, item_to_unit = get_reference_data()
 
 # Debug output (can be removed after testing)
-st.sidebar.write("Debug Info:")
-st.sidebar.write(f"Total items loaded: {len(item_names)}")
-if len(item_names) > 0:
-    st.sidebar.write("Sample items:", item_names[:5])
-    st.sidebar.write("Sample units:", [item_to_unit.get(item) for item in item_names[:5]])
+st.sidebar.write("Reference Data Sample:")
+for item in item_names[:5]:
+    st.sidebar.write(f"{item}: {item_to_unit.get(item, 'NO UNIT')}")
 
 # MRN Generator
 def generate_mrn():
@@ -96,15 +91,16 @@ delivery_date = st.date_input("Date Required",
                              min_value=datetime.now().date(),
                              format="DD/MM/YYYY")
 
-# Add more item rows
-if st.button("+ Add Item"):
-    st.session_state.item_count += 1
-    st.rerun()
-
-# Remove item row
-if st.button("- Remove Item") and st.session_state.item_count > 1:
-    st.session_state.item_count -= 1
-    st.rerun()
+# Add/remove item rows
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("+ Add Item"):
+        st.session_state.item_count += 1
+        st.rerun()
+with col2:
+    if st.button("- Remove Item") and st.session_state.item_count > 1:
+        st.session_state.item_count -= 1
+        st.rerun()
 
 items = []
 
@@ -128,17 +124,23 @@ with st.form("indent_form"):
                              placeholder="Special instructions...")
         
         # Unit and quantity
+        purchase_unit = ""
         if selected_item:
-            purchase_unit = item_to_unit.get(selected_item, "Unit not specified")
-            col2.markdown(f"**Unit:** {purchase_unit}")
-        else:
-            col2.markdown("**Unit:** -")
-            
+            # First try exact match
+            purchase_unit = item_to_unit.get(selected_item, "")
+            # If not found, try case-insensitive match
+            if not purchase_unit:
+                for key, unit in item_to_unit.items():
+                    if key.lower() == selected_item.lower():
+                        purchase_unit = unit
+                        break
+        
+        col2.markdown(f"**Unit:** {purchase_unit if purchase_unit else '-'}")
         qty = col2.number_input("Quantity", 
                                min_value=1, 
                                step=1, 
-                               key=f"qty_{i}",
-                               value=1)
+                               value=1,
+                               key=f"qty_{i}")
         
         if selected_item and qty > 0:
             items.append((selected_item, qty, purchase_unit, note))
@@ -186,8 +188,8 @@ with st.form("indent_form"):
                     dept,
                     formatted_date,
                     item,
-                    str(qty),  # Convert to string to avoid number formatting issues
-                    unit,
+                    str(qty),
+                    unit if unit else "N/A",
                     note if note else "N/A"
                 ])
             
