@@ -24,9 +24,9 @@ reference_sheet = client.open("Indent Log").worksheet("reference")
 # Cache the reference data to speed up performance
 @st.cache_data
 def get_reference_data():
-    data = reference_sheet.get_all_records()
-    item_names = [row['Item'] for row in data if 'Item' in row and row['Item']]
-    item_to_unit = {row['Item']: row['Unit'] for row in data if 'Item' in row and 'Unit' in row}
+    items = reference_sheet.get_all_values()
+    item_names = [row[0] for row in items if row[0]]
+    item_to_unit = {row[0]: row[1] for row in items if len(row) > 1 and row[0] and row[1]}
     return item_names, item_to_unit
 
 item_names, item_to_unit = get_reference_data()
@@ -70,12 +70,9 @@ with st.form("indent_form"):
 
         note = col1.text_input("Note (optional)", key=f"note_{i}")
 
-        if selected_item:
-            purchase_unit = item_to_unit.get(selected_item, "")
-        else:
-            purchase_unit = ""
+        purchase_unit = item_to_unit[selected_item] if selected_item in item_to_unit else ""
+        col2.text_input("Unit", value=purchase_unit, key=f"unit_{i}", disabled=True)
 
-        col2.write(f"Unit: {purchase_unit}")
         qty = col2.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
 
         if selected_item and qty > 0:
