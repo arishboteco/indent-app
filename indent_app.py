@@ -37,11 +37,11 @@ def generate_mrn():
     next_number = len(records) + 1
     return f"MRN-{str(next_number).zfill(3)}"
 
-# --- Session State ---
+# --- Session State Initialization ---
 if "item_count" not in st.session_state:
     st.session_state.item_count = 0
 
-# --- Preserve Previous Items on Add ---
+# --- Preserve Previous Entries on "+ Add Item" ---
 if st.button("+ Add Item"):
     for i in range(st.session_state.item_count):
         st.session_state[f"item_saved_{i}"] = st.session_state.get(f"item_{i}", "")
@@ -49,22 +49,24 @@ if st.button("+ Add Item"):
         st.session_state[f"note_saved_{i}"] = st.session_state.get(f"note_{i}", "")
     st.session_state.item_count += 1
 
-# --- Main Form ---
+# --- Title and Header ---
 st.title("Material Indent Form")
 dept = st.selectbox("Select Department", ["Kitchen", "Bar", "Housekeeping", "Admin"])
 delivery_date = st.date_input("Date Required", min_value=datetime.now().date())
 
 items = []
 
+# --- Form for Inputs ---
 with st.form("indent_form"):
     for i in range(st.session_state.item_count):
         col1, col2 = st.columns([2, 1])
 
-        # Get saved item safely
+        # Restore previously saved default selection
         default_item = st.session_state.get(f"item_saved_{i}", "")
         index = item_names.index(default_item) if default_item in item_names else None
 
-        selected_item = col1.selectbox(
+        # Selection box that updates session state
+        col1.selectbox(
             f"Select item {i+1}",
             options=item_names,
             index=index,
@@ -72,9 +74,13 @@ with st.form("indent_form"):
             key=f"item_{i}"
         )
 
+        selected_item = st.session_state.get(f"item_{i}", "")
         note = col1.text_input("Note (optional)", value=st.session_state.get(f"note_saved_{i}", ""), key=f"note_{i}")
+
+        # Show purchase unit reliably
         purchase_unit = item_to_unit[selected_item] if selected_item in item_to_unit else ""
-        col2.text_input("Unit", value=purchase_unit, key=f"unit_{i}", disabled=True)
+        col2.text_input("Unit", value=purchase_unit, key=f"unit_display_{i}", disabled=True)
+
         qty = col2.number_input("Qty", min_value=0, step=1, value=st.session_state.get(f"qty_saved_{i}", 0), key=f"qty_{i}")
 
         if selected_item and qty > 0:
