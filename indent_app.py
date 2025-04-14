@@ -41,39 +41,57 @@ st.title("Material Indent Form")
 # Select department
 dept = st.selectbox("Select Department", ["Kitchen", "Bar", "Housekeeping", "Admin"])
 
+# Add delivery date
+delivery_date = st.date_input("Date Required", min_value=datetime.now().date())
+
 # Add more item rows
 if st.button("+ Add Item"):
     st.session_state.item_count += 1
 
 items = []
 
-# Item entry section
-for i in range(st.session_state.item_count):
-    col1, col2 = st.columns([2, 1])
+# Indent form
+with st.form("indent_form"):
+    for i in range(st.session_state.item_count):
+        col1, col2 = st.columns([2, 1])
 
-    selected_item = col1.selectbox(
-        f"Select item {i+1}",
-        options=item_names,
-        index=None,
-        placeholder="Type to search...",
-        key=f"item_{i}"
-    )
+        selected_item = col1.selectbox(
+            f"Select item {i+1}",
+            options=item_names,
+            index=None,
+            placeholder="Type to search...",
+            key=f"item_{i}"
+        )
 
-    purchase_unit = item_to_unit.get(selected_item, "")
-    col2.write(f"Unit: {purchase_unit}")
-    qty = col2.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
+        note = col1.text_input("Note (optional)", key=f"note_{i}")
 
-    if selected_item and qty > 0:
-        items.append((selected_item, qty, purchase_unit))
+        purchase_unit = item_to_unit.get(selected_item, "")
+        col2.write(f"Unit: {purchase_unit}")
+        qty = col2.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
 
-# Submit
-if st.button("Submit Request"):
+        if selected_item and qty > 0:
+            items.append((selected_item, qty, purchase_unit, note))
+
+    # Show summary table
     if items:
-        mrn = generate_mrn()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        rows_to_add = [[mrn, timestamp, dept, item, qty, unit] for item, qty, unit in items]
-        for row in rows_to_add:
-            sheet.append_row(row)
-        st.success(f"Indent submitted successfully with MRN: {mrn}")
-    else:
-        st.warning("Please add at least one item to submit.")
+        st.markdown("### Review your indent:")
+        df = pd.DataFrame(items, columns=["Item", "Qty", "Unit", "Note"])
+        st.dataframe(df)
+
+    submitted = st.form_submit_button("Submit Request")
+
+    if submitted:
+        item_names_only = [item[0] for item in items]
+        if len(item_names_only) != len(set(item_names_only)):
+            st.warning("Duplicate items found. Please ensure each item is unique.")
+            st.stop()
+
+        if items:
+            mrn = generate_mrn()
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            rows_to_add = [[mrn, timestamp, dept, delivery_date.strftime("%Y-%m-%d"), item, qty, unit, note] for item, qty, unit, note in items]
+            for row in rows_to_add:
+                sheet.append_row(row)
+            st.success(f"Indent submitted successfully with MRN: {mrn}")
+        else:
+            st.warning("Please add at least one item to submit.")
