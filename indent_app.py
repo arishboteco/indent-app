@@ -1,14 +1,18 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from gspread import Client, Spreadsheet, Worksheet # Import Client etc.
+# *** ADDED/Corrected Imports for Type Hints and FPDF ***
+from gspread import Client, Spreadsheet, Worksheet
 from fpdf import FPDF
+# *** ***
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, date
 import json
 from PIL import Image
 from collections import Counter
+# *** ADDED/Corrected Imports for Type Hints ***
 from typing import Any, Dict, List, Tuple, Optional
+# *** ***
 
 # --- Configuration & Setup ---
 
@@ -43,13 +47,16 @@ except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception
 
 
 # --- Reference Data Loading Function (NO CACHING, returns data) ---
+# Note: Type hints used here, ensure Client etc are imported above
 def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
     """Fetches and processes reference data, returns it. Does NOT modify state."""
     try:
         _reference_sheet = _client.open("Indent Log").worksheet("reference")
         all_data: List[List[str]] = _reference_sheet.get_all_values()
-        item_names: List[str] = []; item_to_unit_lower: Dict[str, str] = {}
-        processed_items_lower: set[str] = set(); header_skipped: bool = False
+        item_names: List[str] = []
+        item_to_unit_lower: Dict[str, str] = {}
+        processed_items_lower: set[str] = set()
+        header_skipped: bool = False
         for i, row in enumerate(all_data):
             if not any(str(cell).strip() for cell in row): continue
             if not header_skipped and i == 0 and ("item" in str(row[0]).lower() or "unit" in str(row[1]).lower()):
@@ -60,8 +67,12 @@ def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
                     item_names.append(item); item_to_unit_lower[item_lower] = unit if unit else "N/A"; processed_items_lower.add(item_lower)
         item_names.sort()
         return item_names, item_to_unit_lower
-    except gspread.exceptions.APIError as e: st.error(f"API Error loading reference data: {e}"); return [], {}
-    except Exception as e: st.error(f"Error loading reference data: {e}"); return [], {}
+    except gspread.exceptions.APIError as e:
+        st.error(f"Google Sheets API Error loading reference data: {e}")
+        return [], {}
+    except Exception as e:
+        st.error(f"Unexpected error loading reference data: {e}")
+        return [], {}
 
 # --- Populate State from Loaded Data (Only if state is empty) ---
 if 'master_item_list' not in st.session_state or 'item_to_unit_lower' not in st.session_state:
@@ -77,6 +88,7 @@ if not master_item_names: st.error("Item list empty/not loaded. Cannot proceed."
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
+    # ... (Same as before) ...
     try:
         all_mrns = sheet.col_values(1); next_number = 1
         if len(all_mrns) > 1:
@@ -120,7 +132,40 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     return pdf.output()
 
 
-# --- *** UI divided into Tabs *** ---
+# --- *** NEW Function to Load Log Data *** ---
+@st.cache_data(ttl=300) # Cache data for 5 minutes
+def load_indent_log_data() -> pd.DataFrame:
+    """Fetches all records from the main log sheet ('sheet1')
+       and returns data as a Pandas DataFrame. Assumes header row exists."""
+    try:
+        # st.write("DEBUG: Fetching indent log data from Google Sheet...") # Uncomment for debug
+        # 'sheet' is the global gspread Worksheet object for the log sheet
+        records = sheet.get_all_records() # Uses header row to create dict keys
+        if not records:
+            # Return an empty DataFrame with expected columns if sheet is empty
+            expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note'] # Adjust if your columns differ
+            st.info("Indent log sheet appears to be empty.")
+            return pd.DataFrame(columns=expected_cols)
+
+        df = pd.DataFrame(records)
+        # Basic check for expected columns - adjust names if they differ in your Sheet!
+        expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note'] # Adjust column names EXACTLY as they appear in Sheet1 header
+        if not all(col in df.columns for col in expected_cols):
+            st.warning(f"Log sheet headers may differ from expected. Found: {list(df.columns)}. Expected: {expected_cols}")
+        # st.write(f"DEBUG: Loaded {len(df)} records from indent log.") # Uncomment for debug
+        return df
+    except gspread.exceptions.APIError as e:
+        st.error(f"API Error loading indent log: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
+    except Exception as e:
+        st.error(f"Error loading indent log data: {e}")
+        # st.exception(e) # Uncomment for detailed traceback
+        return pd.DataFrame() # Return empty DataFrame on error
+
+# --- --- --- --- --- --- --- ---
+
+
+# --- UI divided into Tabs ---
 tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 
 # --- TAB 1: New Indent Form ---
@@ -154,20 +199,19 @@ with tab1:
     # --- Add/Remove/Clear Buttons ---
     col1_btn, col2_btn, col3_btn = st.columns([1, 1, 1])
     with col1_btn:
-        if st.button("➕ Add Item", key="add_item_tab1"): # Added key
-            idx = st.session_state.item_count
-            st.session_state[f"item_{idx}"]=None; st.session_state[f"qty_{idx}"]=1
+        if st.button("➕ Add Item", key="add_item_tab1"):
+            idx = st.session_state.item_count; st.session_state[f"item_{idx}"]=None; st.session_state[f"qty_{idx}"]=1
             st.session_state[f"note_{idx}"]=""; st.session_state[f"unit_display_{idx}"]="-"
             st.session_state.item_count += 1; # IMPLICIT rerun
     with col2_btn:
         can_remove = st.session_state.item_count > 1
-        if st.button("➖ Remove Last", disabled=not can_remove, key="remove_item_tab1"): # Added key
+        if st.button("➖ Remove Last", disabled=not can_remove, key="remove_item_tab1"):
             if can_remove:
                 idx = st.session_state.item_count - 1
                 for prefix in ["item_", "qty_", "note_", "unit_display_"]: st.session_state.pop(f"{prefix}{idx}", None)
                 st.session_state.item_count -= 1; # IMPLICIT rerun
     with col3_btn:
-        if st.button("🔄 Clear All Items", key="clear_items_tab1"): # Added key
+        if st.button("🔄 Clear All Items", key="clear_items_tab1"):
             keys_to_delete = [f"{prefix}{i}" for prefix in ["item_", "qty_", "note_", "unit_display_"] for i in range(st.session_state.item_count)]
             for key in keys_to_delete:
                 if key in st.session_state: del st.session_state[key]
@@ -183,7 +227,6 @@ with tab1:
     # --- Item Input Rows (NO Filtering, WITH Expander) ---
     for i in range(st.session_state.item_count):
         item_label = st.session_state.get(f"item_{i}", "New")
-        # Added key to expander for potential stability, might not be needed
         with st.expander(label=f"Item {i}: {item_label}", expanded=True):
             col1, col2 = st.columns([3, 1])
             with col1:
@@ -222,7 +265,7 @@ with tab1:
             st.warning(f"⚠️ Cannot submit: {tooltip_message}")
 
     # --- Final Submission Button ---
-    if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message if submit_disabled else "Submit the current indent", key="submit_indent_tab1"): # Added key
+    if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message if submit_disabled else "Submit the current indent", key="submit_indent_tab1"):
 
         # --- Final Data Collection & Validation ---
         items_to_submit_final: List[Tuple] = []; final_item_names = set(); final_has_duplicates = False
@@ -240,7 +283,6 @@ with tab1:
         try:
             mrn = generate_mrn(); timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             current_date_obj = st.session_state.get("selected_date", date.today()); formatted_date = current_date_obj.strftime("%d-%m-%Y")
-            # Use current_dept variable defined above checks
             rows_to_add = [[mrn, timestamp, current_dept, formatted_date, item, str(qty), unit, note if note else "N/A"]
                            for item, qty, unit, note in items_to_submit_final]
             if rows_to_add:
@@ -254,7 +296,7 @@ with tab1:
                 # --- Clean up FORM state ONLY ---
                 keys_to_delete = []
                 keys_to_delete.extend([f"{prefix}{i}" for prefix in ["item_", "qty_", "note_", "unit_display_"] for i in range(st.session_state.item_count)])
-                keys_to_delete.extend(["selected_dept", "selected_date"]) # Clear current selections
+                keys_to_delete.extend(["selected_dept", "selected_date"])
                 for key in keys_to_delete:
                     if key in st.session_state: del st.session_state[key]
                 st.session_state.item_count = 1
@@ -265,7 +307,7 @@ with tab1:
 
         except Exception as e: st.error(f"Error during submission: {e}"); st.exception(e)
 
-    # --- Display Post-Submission Summary ---
+    # --- Display Post-Submission Summary (within Tab 1) ---
     if 'submitted_data_for_summary' in st.session_state:
         submitted_data = st.session_state['submitted_data_for_summary']
         st.success(f"Indent submitted successfully! MRN: {submitted_data['mrn']}")
@@ -277,7 +319,7 @@ with tab1:
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Quantity:** {total_submitted_qty}"); st.markdown("---")
 
-        # --- Generate PDF Data & Download Button (with bytes conversion fix) ---
+        # --- Generate PDF Data & Download Button ---
         try:
             pdf_output: bytes = create_indent_pdf(submitted_data)
             pdf_bytes_data = bytes(pdf_output)
@@ -287,9 +329,7 @@ with tab1:
                  key='pdf_download_button'
              )
         except Exception as pdf_error:
-            st.error(f"Could not generate PDF: {pdf_error}")
-            st.exception(pdf_error)
-
+            st.error(f"Could not generate PDF: {pdf_error}"); st.exception(pdf_error)
 
         if st.button("Start New Indent", key='new_indent_button'):
             del st.session_state['submitted_data_for_summary']
@@ -299,9 +339,16 @@ with tab1:
 # --- TAB 2: View Indents ---
 with tab2:
     st.subheader("View Past Indent Requests")
-    st.write("Functionality to view and filter past indents will be added here in the next steps.")
-    # Placeholder for future development
 
+    # Call the function to load data (uses cache)
+    log_df = load_indent_log_data()
+
+    if log_df.empty:
+        st.info("No indent records found in the log sheet or an error occurred loading data.")
+    else:
+        st.info(f"Displaying {len(log_df)} records from the indent log.")
+        # Display the raw data for now. Formatting/filtering comes next.
+        st.dataframe(log_df, use_container_width=True, hide_index=True)
 
 # --- Optional Full State Debug ---
 # st.sidebar.write("### Session State")
