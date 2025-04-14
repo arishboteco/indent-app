@@ -5,6 +5,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import json
 from io import StringIO
+from PIL import Image
+
+# Display logo
+logo = Image.open("logo.png")
+st.image(logo, width=200)
 
 # Google Sheets setup
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -89,7 +94,7 @@ with st.form("indent_form"):
         if items:
             mrn = generate_mrn()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            rows_to_add = [[mrn, timestamp, dept, delivery_date.strftime("%Y-%m-%d"), item, qty, unit, note] for item, qty, unit, note in items]
+            rows_to_add = [[mrn, timestamp, dept, delivery_date.strftime("%d-%m-%y"), item, qty, unit, note] for item, qty, unit, note in items]
             for row in rows_to_add:
                 sheet.append_row(row)
             st.success(f"Indent submitted successfully with MRN: {mrn}")
