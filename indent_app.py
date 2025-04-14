@@ -4,13 +4,15 @@ import gspread
 from gspread import Client, Spreadsheet, Worksheet
 from fpdf import FPDF
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, date # Import date separately
+from datetime import datetime, date
 import json
 from PIL import Image
 from collections import Counter
 from typing import Any, Dict, List, Tuple, Optional
+import io # **** IMPORT io for debugging ****
 
 # --- Configuration & Setup ---
+# ... (Same as before) ...
 # Display logo
 try:
     logo = Image.open("logo.png")
@@ -22,6 +24,7 @@ except Exception as e: st.warning(f"Could not load logo: {e}")
 st.title("Material Indent Form")
 
 # Google Sheets setup & Credentials Handling
+# ... (Same as before) ...
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 try:
     if "gcp_service_account" not in st.secrets: st.error("Missing GCP credentials!"); st.stop()
@@ -41,9 +44,9 @@ except gspread.exceptions.RequestError as e: st.error(f"Network error connecting
 except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); st.stop()
 
 
-# --- Reference Data Loading Function ---
+# --- Reference Data Loading Function (NO CACHING, returns data) ---
 def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
-    # ... (same as before) ...
+    # ... (Same as before) ...
     try:
         _reference_sheet = _client.open("Indent Log").worksheet("reference")
         all_data: List[List[str]] = _reference_sheet.get_all_values()
@@ -61,7 +64,7 @@ def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
     except gspread.exceptions.APIError as e: st.error(f"API Error loading reference data: {e}"); return [], {}
     except Exception as e: st.error(f"Error loading reference data: {e}"); return [], {}
 
-# --- Populate State from Loaded Data ---
+# --- Populate State from Loaded Data (Only if state is empty) ---
 if 'master_item_list' not in st.session_state or 'item_to_unit_lower' not in st.session_state:
      loaded_item_names, loaded_item_to_unit_lower = get_reference_data(client)
      st.session_state['master_item_list'] = loaded_item_names
@@ -73,7 +76,7 @@ if not master_item_names: st.error("Item list empty/not loaded. Cannot proceed."
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
-    # ... (same as before) ...
+    # ... (Same as before) ...
     try:
         all_mrns = sheet.col_values(1); next_number = 1
         if len(all_mrns) > 1:
@@ -148,8 +151,7 @@ tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 # --- TAB 1: New Indent Form ---
 with tab1:
     # ... (All code for Tab 1 remains exactly the same) ...
-    # Includes: Title, Session Init, Callback, Header Inputs, Buttons, Item Rows, Duplicate Check, Submit Logic, Post-Submit Summary
-    st.title("Material Indent Form") # Title moved above tabs
+    # Title moved above tabs
     if "item_count" not in st.session_state: st.session_state.item_count = 1
     for i in range(st.session_state.item_count):
         st.session_state.setdefault(f"item_{i}", None); st.session_state.setdefault(f"qty_{i}", 1)
@@ -254,7 +256,7 @@ with tab1:
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Quantity:** {total_submitted_qty}"); st.markdown("---")
         try:
-            pdf_output: bytes = create_indent_pdf(submitted_data); pdf_bytes_data = bytes(pdf_output)
+            pdf_output: bytes = create_indent_pdf(submitted_data); pdf_bytes_data = bytes(pdf_output) # Ensure bytes
             st.download_button(label="📄 Download Indent PDF", data=pdf_bytes_data, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf", key='pdf_download_button')
         except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error}"); st.exception(pdf_error)
         if st.button("Start New Indent", key='new_indent_button'):
@@ -269,13 +271,24 @@ with tab2:
 
     # --- Filtering Widgets ---
     if not log_df.empty:
+        # --- DEBUG: Print DataFrame Info --- ## ADDED ##
+        with st.expander("Debug: Loaded DataFrame Info", expanded=False):
+             buffer = io.StringIO()
+             log_df.info(buf=buffer)
+             s = buffer.getvalue()
+             st.text(s)
+        # --- ## ---
+
         with st.expander("Filter Options", expanded=True):
-            # Use DEPARTMENTS constant defined earlier
             dept_options = sorted([d for d in DEPARTMENTS if d])
             min_date_log = date.today() - pd.Timedelta(days=30); max_date_log = date.today()
             if 'Date Required' in log_df.columns and not log_df['Date Required'].isnull().all():
-                 min_date_log = log_df['Date Required'].min().date()
-                 max_date_log = log_df['Date Required'].max().date()
+                 # Add check for NaT before calling .date()
+                 min_dt_val = log_df['Date Required'].dropna().min()
+                 max_dt_val = log_df['Date Required'].dropna().max()
+                 if pd.notna(min_dt_val): min_date_log = min_dt_val.date()
+                 if pd.notna(max_dt_val): max_date_log = max_dt_val.date()
+
 
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
             with filt_col1:
@@ -287,39 +300,62 @@ with tab2:
             with filt_col3:
                 item_search = st.text_input("Search by Item Name", key="filt_item")
 
-        # --- Apply Filters --- ### ADDED ###
-        filtered_df = log_df.copy() # Start with a copy
+        # --- DEBUG: Show selected filter values --- ## ADDED ##
+        with st.expander("Debug: Filter Values & Shapes", expanded=False):
+            st.write(f"Filter Values: Start={filt_start_date}, End={filt_end_date}, Depts={selected_depts}, MRN='{mrn_search}', Item='{item_search}'")
+            st.write(f"Original DF shape: {log_df.shape}")
+        # --- ## ---
+
+        # --- Apply Filters --- ### Logic Added ###
+        filtered_df = log_df.copy()
 
         # Apply Date Range Filter
-        if 'Date Required' in filtered_df.columns and not filtered_df['Date Required'].isnull().all():
-            start_ts = pd.Timestamp(filt_start_date)
-            end_ts = pd.Timestamp(filt_end_date)
-            # Ensure comparison is robust against potential NaT values after coercion
-            filtered_df = filtered_df[
-                filtered_df['Date Required'].notna() & # Only include non-null dates
-                (filtered_df['Date Required'].dt.normalize() >= start_ts) &
-                (filtered_df['Date Required'].dt.normalize() <= end_ts)
-            ]
+        try:
+            if 'Date Required' in filtered_df.columns and not filtered_df['Date Required'].isnull().all():
+                start_ts = pd.Timestamp(filt_start_date)
+                end_ts = pd.Timestamp(filt_end_date)
+                date_filt_condition = (
+                    filtered_df['Date Required'].notna() &
+                    (filtered_df['Date Required'].dt.normalize() >= start_ts) &
+                    (filtered_df['Date Required'].dt.normalize() <= end_ts)
+                )
+                filtered_df = filtered_df[date_filt_condition]
+                # st.write(f"DEBUG: After Date Filter shape: {filtered_df.shape}") # Debug
+            # else: st.write("DEBUG: Date column issue or all NaT, skipping filter.") # Debug
+        except Exception as e_date: st.warning(f"Could not apply date filter: {e_date}")
 
         # Apply Department Filter
-        if selected_depts: # Only filter if departments are selected
-            if 'Department' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['Department'].isin(selected_depts)]
+        try:
+            if selected_depts:
+                if 'Department' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['Department'].isin(selected_depts)]
+                    # st.write(f"DEBUG: After Dept Filter shape: {filtered_df.shape}") # Debug
+            # else: st.write("DEBUG: No Dept selected.") # Debug
+        except Exception as e_dept: st.warning(f"Could not apply dept filter: {e_dept}")
 
         # Apply MRN Filter
-        if mrn_search:
-            if 'MRN' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['MRN'].astype(str).str.contains(mrn_search, case=False, na=False)]
+        try:
+            if mrn_search:
+                if 'MRN' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['MRN'].astype(str).str.contains(mrn_search, case=False, na=False)]
+                    # st.write(f"DEBUG: After MRN Filter shape: {filtered_df.shape}") # Debug
+            # else: st.write("DEBUG: No MRN search term.") # Debug
+        except Exception as e_mrn: st.warning(f"Could not apply MRN filter: {e_mrn}")
 
         # Apply Item Filter
-        if item_search:
-            if 'Item' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['Item'].astype(str).str.contains(item_search, case=False, na=False)]
-        # --- Filtering Done --- ### ### ###
+        try:
+            if item_search:
+                if 'Item' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['Item'].astype(str).str.contains(item_search, case=False, na=False)]
+                    # st.write(f"DEBUG: After Item Filter shape: {filtered_df.shape}") # Debug
+            # else: st.write("DEBUG: No Item search term.") # Debug
+        except Exception as e_item: st.warning(f"Could not apply Item filter: {e_item}")
+
+        # --- Filtering Done ---
 
         # --- Display Section ---
         st.markdown("---")
-        st.write(f"Displaying {len(filtered_df)} matching records:") # Use count of filtered data
+        st.write(f"Displaying {len(filtered_df)} matching records:") # Use filtered count
         st.dataframe(
             filtered_df, # Display the FILTERED DataFrame
             use_container_width=True, hide_index=True,
