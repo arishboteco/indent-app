@@ -118,11 +118,9 @@ def generate_mrn():
                 if mrn_str and mrn_str.startswith("MRN-") and mrn_str[4:].isdigit():
                     last_valid_num = int(mrn_str[4:])
                     break
-            # Fallback if no valid MRN found, estimate based on non-empty rows
             if last_valid_num == 0 and len(all_mrns) > 1:
                  non_empty_rows = len([val for val in all_mrns if val])
                  last_valid_num = max(0, non_empty_rows -1) # Subtract potential header
-
             next_number = last_valid_num + 1
         return f"MRN-{str(next_number).zfill(3)}"
     except gspread.exceptions.APIError as e:
@@ -245,23 +243,72 @@ for i in range(st.session_state.item_count):
     st.markdown("---") # Separator between items
 
 
-# --- Final Submission Button (Outside loop, NO form) ---
+# --- Dynamic Indent Summary Section ---
 st.markdown("---")
-if st.button("Submit Indent Request", type="primary", use_container_width=True):
+st.subheader("Current Indent Summary")
 
-    # --- Validation and Data Collection on Final Submit ---
-    current_dept = st.session_state.get("selected_dept", "")
-    current_date = st.session_state.get("selected_date", date.today())
+items_for_summary = []
+item_names_in_summary = set()
+summary_has_duplicates = False
 
+for i in range(st.session_state.item_count):
+    item_name = st.session_state.get(f"item_{i}")
+    item_qty = st.session_state.get(f"qty_{i}", 1) # Default to 1 if state missing somehow
+    item_unit = st.session_state.get(f"unit_display_{i}", "-") # Use the display unit
+    item_note = st.session_state.get(f"note_{i}", "")
+
+    if item_name: # Only include rows where an item is selected
+        # Check for duplicates *within the summary display itself*
+        if item_name in item_names_in_summary:
+            summary_has_duplicates = True
+            # Decide whether to show duplicates in summary or skip them
+            # Let's skip them for a cleaner summary display
+            continue
+        item_names_in_summary.add(item_name)
+        items_for_summary.append({
+            "Item": item_name,
+            "Quantity": item_qty,
+            "Unit": item_unit,
+            "Note": item_note
+        })
+
+if items_for_summary:
+    summary_df = pd.DataFrame(items_for_summary)
+    st.dataframe(summary_df, hide_index=True, use_container_width=True)
+
+    total_qty = sum(item['Quantity'] for item in items_for_summary)
+    st.markdown(f"**Total Quantity:** {total_qty} | **Item Types:** {len(items_for_summary)}")
+    if summary_has_duplicates:
+         st.warning("Note: Duplicate items were entered; only the first instance of each is shown in this summary.")
+else:
+    st.info("No items added to the indent yet.")
+
+
+# --- Final Submission Button ---
+st.markdown("---")
+# Disable button if no valid items are in the summary
+submit_disabled = not items_for_summary or summary_has_duplicates # Also disable if duplicates exist
+
+# Add more comprehensive check before enabling button
+current_dept = st.session_state.get("selected_dept", "")
+if not current_dept:
+    submit_disabled = True
+    st.warning("Please select a department to enable submission.")
+
+
+# Final Submit Button
+if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled):
+
+    # Re-validate department just in case
     if not current_dept:
-        st.warning("Please select a department before submitting.")
+        st.error("Department not selected. Please select a department.")
         st.stop()
-    # Date should always have a value
 
-    items_to_submit = []
-    item_names_in_submission = set()
-    has_duplicates = False
-    has_missing_items = False
+    # Use the data already collected for the summary (items_for_summary)
+    # Need to ensure the unit used for submission is the definitive one from item_to_unit_lower
+    items_to_submit_final = []
+    final_item_names = set() # Need separate duplicate check for submission logic
+    final_has_duplicates = False
 
     for i in range(st.session_state.item_count):
         selected_item = st.session_state.get(f"item_{i}")
@@ -269,40 +316,33 @@ if st.button("Submit Indent Request", type="primary", use_container_width=True):
         note = st.session_state.get(f"note_{i}", "")
 
         if selected_item and qty > 0:
-            # Fetch the unit again for final submission data integrity
+            # Fetch the definitive unit from master list for submission data
             purchase_unit = item_to_unit_lower.get(selected_item.lower(), "N/A")
 
-            if selected_item in item_names_in_submission:
-                has_duplicates = True
-                continue # Skip duplicates
-            item_names_in_submission.add(selected_item)
-            items_to_submit.append((selected_item, qty, purchase_unit, note))
-        elif not selected_item:
-            has_missing_items = True
+            # Final duplicate check before submission
+            if selected_item in final_item_names:
+                final_has_duplicates = True
+                continue # Skip duplicates for submission
+            final_item_names.add(selected_item)
+            items_to_submit_final.append((selected_item, qty, purchase_unit, note))
 
-    # --- Validation Checks ---
-    if not items_to_submit:
-        st.warning("No valid items entered. Please select items and ensure quantity is at least 1.")
-        st.stop()
+    if not items_to_submit_final:
+         st.error("No valid items found for submission after final check.")
+         st.stop()
 
-    if has_duplicates:
-        st.warning("Duplicate items were selected and ignored in the final submission.")
-
-    # Optional: Display a final confirmation before sending?
-    # st.markdown("### Final Review:")
-    # df_final = pd.DataFrame(items_to_submit, columns=["Item", "Quantity", "Unit", "Note"])
-    # st.dataframe(df_final)
-    # if not st.button("Confirm Submission"):
-    #      st.stop()
+    if final_has_duplicates:
+         st.warning("Duplicate items were ignored during final submission.")
+         # Proceeding with unique items
 
     # --- Submit to Google Sheets ---
     try:
         mrn = generate_mrn()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_date = st.session_state.get("selected_date", date.today()) # Get date from state
         formatted_date = current_date.strftime("%d-%m-%Y")
 
         rows_to_add = []
-        for item, qty_val, unit, note_val in items_to_submit:
+        for item, qty_val, unit, note_val in items_to_submit_final: # Use final list
             rows_to_add.append([
                 mrn, timestamp, current_dept, formatted_date,
                 item, str(qty_val), unit, note_val if note_val else "N/A"
@@ -314,23 +354,17 @@ if st.button("Submit Indent Request", type="primary", use_container_width=True):
             st.success(f"Indent submitted successfully! MRN: {mrn}")
             st.balloons()
 
-            # --- Clean up Session State after successful submission ---
+            # --- Clean up Session State ---
             keys_to_delete = []
-            # Collect keys for form widgets and dynamic display state
             keys_to_delete.extend([f"{prefix}{i}" for prefix in ["item_", "qty_", "note_", "unit_display_"] for i in range(st.session_state.item_count)])
-            keys_to_delete.extend(["selected_dept", "selected_date"]) # Add header input keys
-
+            keys_to_delete.extend(["selected_dept", "selected_date"])
             for key in keys_to_delete:
-                if key in st.session_state:
-                    del st.session_state[key]
-
-            st.session_state.item_count = 1 # Reset item count for next form
-            # No need to initialize state here, will happen at script start
-
-            st.rerun() # Rerun to show fresh form
+                if key in st.session_state: del st.session_state[key]
+            st.session_state.item_count = 1
+            st.rerun()
 
     except gspread.exceptions.APIError as e:
-        st.error(f"Google Sheets API Error during submission: {e}. Please check permissions/quota and try again.")
+        st.error(f"Google Sheets API Error during submission: {e}.")
         st.exception(e)
     except Exception as e:
         st.error(f"An unexpected error occurred during submission: {e}")
@@ -338,11 +372,4 @@ if st.button("Submit Indent Request", type="primary", use_container_width=True):
 
 
 # --- Optional Sidebar Debug ---
-# with st.sidebar:
-#     st.write("### Debug Info")
-#     st.write("Item Count:", st.session_state.get("item_count", "N/A"))
-#     # Uncomment below to see all session state details
-#     # st.write("Session State:", st.session_state)
-#     st.write("---")
-#     st.write("Reference Items Loaded:", len(item_names) if item_names else 0)
-#     st.write("Reference Map (Lowercased):", len(item_to_unit_lower) if item_to_unit_lower else 0)
+# (Keep sidebar code as before if needed)
