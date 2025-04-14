@@ -59,6 +59,7 @@ except Exception as e:
 
 @st.cache_data(ttl=600) # Cache reference data for 10 minutes
 def get_reference_data(_client):
+    # ... (rest of get_reference_data function remains the same) ...
     try:
         # Fetch within function for cache consistency if sheet object changes
         _reference_sheet = _client.open("Indent Log").worksheet("reference")
@@ -91,40 +92,38 @@ def get_reference_data(_client):
         item_names.sort() # Sort display list alphabetically
         # Keep the master list accessible
         st.session_state['master_item_list'] = item_names
+        st.session_state['item_to_unit_lower'] = item_to_unit_lower # Store map in state too
         return item_names, item_to_unit_lower
 
     except gspread.exceptions.APIError as e:
         st.error(f"Google Sheets API Error loading reference data: {e}. Check permissions/names.")
+        st.session_state['master_item_list'] = [] # Ensure state reflects error
+        st.session_state['item_to_unit_lower'] = {}
         return [], {} # Return empty structures on error
     except Exception as e:
         st.error(f"Unexpected error loading reference data: {e}")
         st.exception(e)
+        st.session_state['master_item_list'] = []
+        st.session_state['item_to_unit_lower'] = {}
         return [], {}
 
-# Ensure master list is in state if cache is hit without rerunning top part fully
-if 'master_item_list' not in st.session_state:
-     master_item_names, item_to_unit_lower_map = get_reference_data(client)
-     if not master_item_names:
-         st.error("Failed to load item list from the 'reference' sheet. Cannot proceed.")
-         st.stop()
-     st.session_state['master_item_list'] = master_item_names
-     # Avoid overwriting map if it exists from another path
-     if 'item_to_unit_lower' not in st.session_state:
-         st.session_state['item_to_unit_lower'] = item_to_unit_lower_map
-else:
-    # If master list exists, ensure the map also exists or reload if necessary
-    if 'item_to_unit_lower' not in st.session_state:
-         _, item_to_unit_lower_map = get_reference_data(client)
-         st.session_state['item_to_unit_lower'] = item_to_unit_lower_map
+# Ensure master list and map are in state
+if 'master_item_list' not in st.session_state or 'item_to_unit_lower' not in st.session_state:
+     _, _ = get_reference_data(client) # Call to populate state via cache/direct call
 
 # Use the maps/lists from session state from now on
-master_item_names = st.session_state['master_item_list']
-item_to_unit_lower = st.session_state['item_to_unit_lower']
+master_item_names = st.session_state.get('master_item_list', [])
+item_to_unit_lower = st.session_state.get('item_to_unit_lower', {})
+
+if not master_item_names: # Check if loading failed critically
+    st.error("Item list is empty. Cannot proceed.")
+    st.stop()
 
 
 # --- MRN Generation ---
 # (Keep the MRN function as before)
 def generate_mrn():
+    # ... (MRN generation code remains the same) ...
     try:
         all_mrns = sheet.col_values(1) # Assuming MRN is in column 1
         if len(all_mrns) <= 1: # Only header or empty
@@ -179,7 +178,7 @@ def update_unit_display(index):
         st.session_state[unit_display_key] = purchase_unit if purchase_unit else "-" # Ensure '-' if unit is blank
     else:
         st.session_state[unit_display_key] = "-" # Reset to placeholder if item deselected
-    # No need to rerun here, Streamlit handles reruns after callbacks implicitly
+
 
 # --- Header Inputs (Dept, Date) ---
 dept = st.selectbox("Select Department",
@@ -220,46 +219,43 @@ with col2_btn:
 st.markdown("---")
 st.subheader("Enter Items:")
 
-# --- Calculate Globally Selected Items (for filtering dropdowns) ---
-# Get items selected in *any* row to filter dropdowns
-all_currently_selected_items = set()
-for k in range(st.session_state.item_count):
-    item_in_row_k = st.session_state.get(f"item_{k}")
-    if item_in_row_k:
-        all_currently_selected_items.add(item_in_row_k)
 
 # --- Item Input Rows (NO st.form HERE) ---
 # Loop to create item rows based on session state count
 for i in range(st.session_state.item_count):
-    col1, col2 = st.columns([3, 1])
 
-    # --- Determine available options for this specific row ---
-    item_selected_in_this_row = st.session_state.get(f"item_{i}")
-    # Items selected elsewhere = all selected items MINUS the one selected in THIS row (if any)
-    items_selected_elsewhere = all_currently_selected_items - {item_selected_in_this_row}
-    # Filter master list: keep item if it's not selected elsewhere
+    # --- Determine items selected in OTHER rows --- V2 ---
+    items_selected_elsewhere = set()
+    for k in range(st.session_state.item_count):
+        if i == k: # Skip the current row
+            continue
+        item_in_row_k = st.session_state.get(f"item_{k}")
+        if item_in_row_k:
+            items_selected_elsewhere.add(item_in_row_k)
+
+    # --- Filter the master list based on items selected elsewhere ---
     available_options_for_this_row = [""] + [
         item for item in master_item_names if item not in items_selected_elsewhere
     ]
 
+    # --- Now render the widgets for row i ---
+    col1, col2 = st.columns([3, 1])
     with col1:
-        # Item selection - Use filtered options list
+        # Item selection - Use the correctly filtered options list
         selected_item = st.selectbox(
-            # Change label numbering to start from 0
-            label=f"Item {i}",
+            label=f"Item {i}", # Numbering starts from 0
             options=available_options_for_this_row, # Use filtered list
-            key=f"item_{i}", # Let Streamlit manage state via key
+            key=f"item_{i}",
             placeholder="Type or select an item...",
             label_visibility="collapsed",
-            on_change=update_unit_display, # Trigger unit update
-            args=(i,) # Pass index to callback
+            on_change=update_unit_display,
+            args=(i,)
         )
 
         # Note field: Uses key
         note = st.text_input(
-            # Change label numbering to start from 0
-            label=f"Note {i} (optional)",
-            key=f"note_{i}", # Let Streamlit manage state via key
+            label=f"Note {i}", # Numbering starts from 0
+            key=f"note_{i}",
             placeholder="Special instructions...",
             label_visibility="collapsed"
         )
@@ -267,17 +263,15 @@ for i in range(st.session_state.item_count):
     with col2:
         # Unit Display: Reads from state updated by the callback
         st.markdown("**Unit:**")
-        # Display the unit stored in session state by the callback
         unit_to_display = st.session_state.get(f"unit_display_{i}", "-")
         st.markdown(f"### {unit_to_display}")
 
         # Quantity: Uses key
         qty = st.number_input(
-            # Change label numbering to start from 0
-            label=f"Quantity {i}",
+            label=f"Quantity {i}", # Numbering starts from 0
             min_value=1,
             step=1,
-            key=f"qty_{i}", # Let Streamlit manage state via key
+            key=f"qty_{i}",
             label_visibility="collapsed"
         )
     st.markdown("---") # Separator between items
@@ -288,7 +282,6 @@ st.markdown("---")
 st.subheader("Current Indent Summary")
 
 items_for_summary = []
-# Use simple list to check for duplicates *during collection* for summary display
 summary_item_names_processed = set()
 summary_has_duplicates_in_state = False # Flag if state itself has duplicates
 
@@ -299,30 +292,22 @@ for i in range(st.session_state.item_count):
     item_note = st.session_state.get(f"note_{i}", "")
 
     if item_name: # Only include rows where an item is selected
-        # Check if this item name has already been processed *for summary display*
         if item_name in summary_item_names_processed:
             summary_has_duplicates_in_state = True
-            # Skip adding duplicate to the summary DataFrame
-            continue
+            continue # Skip duplicates for summary display
         summary_item_names_processed.add(item_name)
-
         items_for_summary.append({
-            "Item": item_name,
-            "Quantity": item_qty,
-            "Unit": item_unit,
-            "Note": item_note
+            "Item": item_name, "Quantity": item_qty,
+            "Unit": item_unit, "Note": item_note
         })
 
 if items_for_summary:
     summary_df = pd.DataFrame(items_for_summary)
     st.dataframe(summary_df, hide_index=True, use_container_width=True)
-
     total_qty = sum(item['Quantity'] for item in items_for_summary)
     st.markdown(f"**Total Quantity:** {total_qty} | **Item Types:** {len(items_for_summary)}")
-    # Add note if state had duplicates, even though summary doesn't show them
     if summary_has_duplicates_in_state:
-         st.warning("Note: Duplicate items were detected in the input rows; only showing unique items here. Submission might be blocked.")
-
+         st.warning("Note: Duplicate items were detected in input rows; only unique items shown here. Fix duplicates to enable submission.")
 else:
     st.info("No items added to the indent yet.")
 
@@ -341,9 +326,8 @@ if not items_for_summary: tooltip_message += "Add at least one item. "
 if summary_has_duplicates_in_state: tooltip_message += "Remove duplicate item entries. "
 if not current_dept: tooltip_message += "Select a department."
 
-
 # Final Submit Button with dynamic tooltip
-if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message if submit_disabled else None):
+if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message if submit_disabled else "Submit the current indent"):
 
     # Re-validate department
     if not current_dept:
@@ -351,6 +335,8 @@ if st.button("Submit Indent Request", type="primary", use_container_width=True, 
         st.stop()
 
     # --- Final Data Collection & Validation ---
+    # (Logic remains the same - uses state directly, performs final checks)
+    # ... (validation, final collection, submission to Sheets) ...
     items_to_submit_final = []
     final_item_names = set()
     final_has_duplicates = False # Should be caught by disable, but check again
@@ -401,7 +387,8 @@ if st.button("Submit Indent Request", type="primary", use_container_width=True, 
             # --- Clean up Session State ---
             keys_to_delete = []
             keys_to_delete.extend([f"{prefix}{i}" for prefix in ["item_", "qty_", "note_", "unit_display_"] for i in range(st.session_state.item_count)])
-            keys_to_delete.extend(["selected_dept", "selected_date", "master_item_list", "item_to_unit_lower"]) # Clean cached data refs too? Maybe not necessary.
+            keys_to_delete.extend(["selected_dept", "selected_date"])
+            # Don't delete master_item_list or item_to_unit_lower from state here
             for key in keys_to_delete:
                 if key in st.session_state: del st.session_state[key]
             st.session_state.item_count = 1
