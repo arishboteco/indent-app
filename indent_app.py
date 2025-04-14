@@ -50,9 +50,15 @@ items = []
 # Item entry section
 for i in range(st.session_state.item_count):
     col1, col2 = st.columns([2, 1])
-    typed_item = col1.text_input(f"Search item {i+1}:", key=f"typed_item_{i}")
-    match_items = [item for item in item_names if typed_item.lower() in item.lower()] if typed_item else item_names
-    selected_item = col1.selectbox(f"Select item {i+1}", match_items, key=f"item_{i}")
+
+    selected_item = col1.selectbox(
+        f"Select item {i+1}",
+        options=item_names,
+        index=None,
+        placeholder="Type to search...",
+        key=f"item_{i}"
+    )
+
     purchase_unit = item_to_unit.get(selected_item, "")
     col2.write(f"Unit: {purchase_unit}")
     qty = col2.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
