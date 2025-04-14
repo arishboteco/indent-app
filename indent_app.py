@@ -4,17 +4,27 @@ import gspread
 from gspread import Client, Spreadsheet, Worksheet
 from fpdf import FPDF
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, date # Import date separately if using directly
+from datetime import datetime, date
 import json
 from PIL import Image
 from collections import Counter
 from typing import Any, Dict, List, Tuple, Optional
 
 # --- Configuration & Setup ---
+
 # Display logo
-# ... (same as before) ...
+try:
+    logo = Image.open("logo.png")
+    st.image(logo, width=200)
+except FileNotFoundError:
+    st.warning("Logo image 'logo.png' not found.")
+except Exception as e:
+    st.warning(f"Could not load logo: {e}")
+
+# --- Main Application Title ---
+st.title("Material Indent Form")
+
 # Google Sheets setup & Credentials Handling
-# ... (same as before) ...
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 try:
     if "gcp_service_account" not in st.secrets: st.error("Missing GCP credentials!"); st.stop()
@@ -22,6 +32,7 @@ try:
     creds_dict: Dict[str, Any] = json.loads(json_creds_data) if isinstance(json_creds_data, str) else json_creds_data
     creds: ServiceAccountCredentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client: Client = gspread.authorize(creds)
+    # Access worksheets with detailed error handling
     try:
         indent_log_spreadsheet: Spreadsheet = client.open("Indent Log")
         sheet: Worksheet = indent_log_spreadsheet.sheet1 # Log Sheet
@@ -34,9 +45,9 @@ except gspread.exceptions.RequestError as e: st.error(f"Network error connecting
 except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); st.stop()
 
 
-# --- Reference Data Loading Function ---
+# --- Reference Data Loading Function (NO CACHING, returns data) ---
 def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
-    # ... (same as before) ...
+    """Fetches and processes reference data, returns it. Does NOT modify state."""
     try:
         _reference_sheet = _client.open("Indent Log").worksheet("reference")
         all_data: List[List[str]] = _reference_sheet.get_all_values()
@@ -44,30 +55,36 @@ def get_reference_data(_client: Client) -> Tuple[List[str], Dict[str, str]]:
         processed_items_lower: set[str] = set(); header_skipped: bool = False
         for i, row in enumerate(all_data):
             if not any(str(cell).strip() for cell in row): continue
-            if not header_skipped and i == 0 and ("item" in str(row[0]).lower() or "unit" in str(row[1]).lower()): header_skipped = True; continue
+            if not header_skipped and i == 0 and ("item" in str(row[0]).lower() or "unit" in str(row[1]).lower()):
+                header_skipped = True; continue
             if len(row) >= 2:
                 item: str = str(row[0]).strip(); unit: str = str(row[1]).strip(); item_lower: str = item.lower()
                 if item and item_lower not in processed_items_lower:
                     item_names.append(item); item_to_unit_lower[item_lower] = unit if unit else "N/A"; processed_items_lower.add(item_lower)
         item_names.sort()
         return item_names, item_to_unit_lower
-    except gspread.exceptions.APIError as e: st.error(f"API Error loading reference data: {e}"); return [], {}
-    except Exception as e: st.error(f"Error loading reference data: {e}"); return [], {}
+    except gspread.exceptions.APIError as e:
+        st.error(f"Google Sheets API Error loading reference data: {e}")
+        return [], {}
+    except Exception as e:
+        st.error(f"Unexpected error loading reference data: {e}")
+        return [], {}
 
-# --- Populate State from Loaded Data ---
-# ... (same as before) ...
+# --- Populate State from Loaded Data (Only if state is empty) ---
 if 'master_item_list' not in st.session_state or 'item_to_unit_lower' not in st.session_state:
      loaded_item_names, loaded_item_to_unit_lower = get_reference_data(client)
      st.session_state['master_item_list'] = loaded_item_names
      st.session_state['item_to_unit_lower'] = loaded_item_to_unit_lower
+
 master_item_names = st.session_state.get('master_item_list', [])
 item_to_unit_lower = st.session_state.get('item_to_unit_lower', {})
+
 if not master_item_names: st.error("Item list empty/not loaded. Cannot proceed."); st.stop()
 
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
-    # ... (same as before) ...
+    # ... (Same as before) ...
     try:
         all_mrns = sheet.col_values(1); next_number = 1
         if len(all_mrns) > 1:
@@ -114,26 +131,21 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
 # --- Function to Load and Clean Log Data (Cached) ---
 @st.cache_data(ttl=300)
 def load_indent_log_data() -> pd.DataFrame:
-    # ... (Same as previous version with cleaning included) ...
+    # ... (Same as before) ...
     try:
         records = sheet.get_all_records()
         if not records:
             expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
-            # Don't show info here, handle empty DF in the tab
             return pd.DataFrame(columns=expected_cols)
-
         df = pd.DataFrame(records)
         expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
         missing_cols = [col for col in expected_cols if col not in df.columns]
-        if missing_cols:
-             st.warning(f"Log sheet missing columns: {', '.join(missing_cols)}.")
-
+        if missing_cols: st.warning(f"Log sheet missing columns: {', '.join(missing_cols)}.")
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
         if 'Date Required' in df.columns: df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
         if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
         for col in expected_cols:
              if col not in df.columns: df[col] = pd.NA
-
         return df
     except gspread.exceptions.APIError as e: st.error(f"API Error loading indent log: {e}"); return pd.DataFrame()
     except Exception as e: st.error(f"Error loading/cleaning log: {e}"); return pd.DataFrame()
@@ -146,18 +158,23 @@ tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 
 # --- TAB 1: New Indent Form ---
 with tab1:
-    # ... (All code for Tab 1 remains exactly the same) ...
-    st.title("Material Indent Form")
+    # Note: Title is now above the tabs
+
+    # --- Session State Initialization ---
     if "item_count" not in st.session_state: st.session_state.item_count = 1
     for i in range(st.session_state.item_count):
         st.session_state.setdefault(f"item_{i}", None); st.session_state.setdefault(f"qty_{i}", 1)
         st.session_state.setdefault(f"note_{i}", ""); st.session_state.setdefault(f"unit_display_{i}", "-")
     st.session_state.setdefault('last_dept', None)
+
+    # --- Callback Function ---
     def update_unit_display(index: int) -> None:
         selected_item = st.session_state.get(f"item_{index}")
         local_map = st.session_state.get('item_to_unit_lower', {})
         unit = local_map.get(selected_item.lower(), "N/A") if selected_item else "-"
         st.session_state[f"unit_display_{index}"] = unit if unit else "-"
+
+    # --- Header Inputs ---
     DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
     last_dept = st.session_state.get('last_dept')
     dept_index = 0
@@ -166,19 +183,21 @@ with tab1:
         except ValueError: dept_index = 0
     dept = st.selectbox("Select Department", DEPARTMENTS, index=dept_index, key="selected_dept", placeholder="Select department...")
     delivery_date = st.date_input("Date Required", value=date.today(), min_value=date.today(), format="DD/MM/YYYY", key="selected_date")
+
+    # --- Add/Remove/Clear Buttons ---
     col1_btn, col2_btn, col3_btn = st.columns([1, 1, 1])
     with col1_btn:
         if st.button("➕ Add Item", key="add_item_tab1"):
             idx = st.session_state.item_count; st.session_state[f"item_{idx}"]=None; st.session_state[f"qty_{idx}"]=1
             st.session_state[f"note_{idx}"]=""; st.session_state[f"unit_display_{idx}"]="-"
-            st.session_state.item_count += 1;
+            st.session_state.item_count += 1; # IMPLICIT rerun
     with col2_btn:
         can_remove = st.session_state.item_count > 1
         if st.button("➖ Remove Last", disabled=not can_remove, key="remove_item_tab1"):
             if can_remove:
                 idx = st.session_state.item_count - 1
                 for prefix in ["item_", "qty_", "note_", "unit_display_"]: st.session_state.pop(f"{prefix}{idx}", None)
-                st.session_state.item_count -= 1;
+                st.session_state.item_count -= 1; # IMPLICIT rerun
     with col3_btn:
         if st.button("🔄 Clear All Items", key="clear_items_tab1"):
             keys_to_delete = [f"{prefix}{i}" for prefix in ["item_", "qty_", "note_", "unit_display_"] for i in range(st.session_state.item_count)]
@@ -187,20 +206,34 @@ with tab1:
             st.session_state.item_count = 1
             st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1); st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
             st.rerun()
-    st.markdown("---"); st.subheader("Enter Items:")
+
+
+    st.markdown("---")
+    st.subheader("Enter Items:")
+
+    # --- Item Input Rows (NO Filtering, WITH Expander) ---
     for i in range(st.session_state.item_count):
         item_label = st.session_state.get(f"item_{i}", "New")
         with st.expander(label=f"Item {i}: {item_label}", expanded=True):
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.selectbox(label=f"Item Select {i}", options=[""] + master_item_names, key=f"item_{i}", placeholder="Type or select an item...", label_visibility="collapsed", on_change=update_unit_display, args=(i,))
+                st.selectbox(
+                    label=f"Item Select {i}", options=[""] + master_item_names, key=f"item_{i}",
+                    placeholder="Type or select an item...", label_visibility="collapsed",
+                    on_change=update_unit_display, args=(i,)
+                )
                 st.text_input(f"Note {i}", key=f"note_{i}", placeholder="Special instructions...", label_visibility="collapsed")
             with col2:
-                st.markdown("**Unit:**"); unit_to_display = st.session_state.get(f"unit_display_{i}", "-"); st.markdown(f"### {unit_to_display}")
+                st.markdown("**Unit:**"); unit_to_display = st.session_state.get(f"unit_display_{i}", "-"); st.markdown(f"### {unit_to_display}") # Dynamic Unit
                 st.number_input(f"Quantity {i}", min_value=1, step=1, key=f"qty_{i}", label_visibility="collapsed")
+
+
+    # --- Immediate Duplicate Check & Feedback ---
     current_selected_items = [st.session_state.get(f"item_{k}") for k in range(st.session_state.item_count) if st.session_state.get(f"item_{k}")]
     item_counts = Counter(current_selected_items); duplicates_found = {item: count for item, count in item_counts.items() if count > 1}
     has_duplicates_in_state = bool(duplicates_found)
+
+    # --- Pre-Submission Check & Button Disabling Info ---
     has_valid_items = any(st.session_state.get(f"item_{k}") and st.session_state.get(f"qty_{k}", 0) > 0 for k in range(st.session_state.item_count))
     current_dept_tab1 = st.session_state.get("selected_dept", "")
     submit_disabled = not has_valid_items or has_duplicates_in_state or not current_dept_tab1
@@ -209,11 +242,20 @@ with tab1:
     if has_duplicates_in_state: error_messages.append("Remove duplicates. ")
     if not current_dept_tab1: error_messages.append("Select department.")
     tooltip_message = "".join(error_messages)
+
     st.markdown("---")
     if submit_disabled and tooltip_message:
-        if has_duplicates_in_state: dup_list = ", ".join(duplicates_found.keys()); st.error(f"⚠️ Cannot submit: Duplicate items detected ({dup_list}). Please fix.")
-        else: st.warning(f"⚠️ Cannot submit: {tooltip_message}")
+        if has_duplicates_in_state:
+            dup_list = ", ".join(duplicates_found.keys())
+            st.error(f"⚠️ Cannot submit: Duplicate items detected ({dup_list}). Please fix.")
+        else:
+            st.warning(f"⚠️ Cannot submit: {tooltip_message}")
+
+
+    # --- Final Submission Button ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message if submit_disabled else "Submit the current indent", key="submit_indent_tab1"):
+
+        # ... (Final data collection, validation, submission logic - unchanged) ...
         items_to_submit_final: List[Tuple] = []; final_item_names = set(); final_has_duplicates = False
         local_item_to_unit_lower = st.session_state.get('item_to_unit_lower', {})
         for i in range(st.session_state.item_count):
@@ -242,7 +284,10 @@ with tab1:
                 st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1); st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
                 st.rerun()
         except Exception as e: st.error(f"Error during submission: {e}"); st.exception(e)
+
+    # --- Display Post-Submission Summary (within Tab 1) ---
     if 'submitted_data_for_summary' in st.session_state:
+        # ... (Post-submission summary display logic - unchanged) ...
         submitted_data = st.session_state['submitted_data_for_summary']
         st.success(f"Indent submitted successfully! MRN: {submitted_data['mrn']}")
         st.balloons(); st.markdown("---"); st.subheader("Submitted Indent Summary")
@@ -265,54 +310,37 @@ with tab2:
 
     log_df = load_indent_log_data() # Function now includes cleaning
 
-    # --- Filtering Widgets --- ### ADDED ###
-    if not log_df.empty: # Only show filters if there's data
+    # --- Filtering Widgets ---
+    if not log_df.empty:
         with st.expander("Filter Options", expanded=True):
-            # Prepare filter options
-            # Use DEPARTMENTS list defined earlier, remove empty string if present
-            dept_options = [d for d in DEPARTMENTS if d] # Use predefined list + remove empty
-            # Ensure 'Date Required' column exists and has valid dates before calc min/max
+            dept_options = sorted([d for d in DEPARTMENTS if d]) # Get dept list, remove blank
+            # Calculate min/max dates safely
+            min_date_log = date.today() - pd.Timedelta(days=30) # Default fallback
+            max_date_log = date.today()
             if 'Date Required' in log_df.columns and not log_df['Date Required'].isnull().all():
                  min_date_log = log_df['Date Required'].min().date()
                  max_date_log = log_df['Date Required'].max().date()
-            else: # Default fallback if no valid dates
-                 min_date_log = date.today() - pd.Timedelta(days=30)
-                 max_date_log = date.today()
 
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
-
             with filt_col1:
-                filt_start_date = st.date_input(
-                    "Reqd. From", value=min_date_log,
-                    min_value=min_date_log, max_value=max_date_log, key="filt_start"
-                )
-                filt_end_date = st.date_input(
-                    "Reqd. To", value=max_date_log,
-                    min_value=filt_start_date, max_value=max_date_log, key="filt_end"
-                )
-
+                filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start")
+                filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=filt_start_date, max_value=max_date_log, key="filt_end")
             with filt_col2:
-                 selected_depts = st.multiselect(
-                     "Filter by Department", options=dept_options, default=[], key="filt_dept"
-                 )
+                 selected_depts = st.multiselect("Filter by Department", options=dept_options, default=[], key="filt_dept")
                  mrn_search = st.text_input("Search by MRN", key="filt_mrn")
-
             with filt_col3:
                 item_search = st.text_input("Search by Item Name", key="filt_item")
 
-        # --- (Filtering Logic will go here in Step 5) ---
-        # For now, display the original cleaned DataFrame below filters
-        filtered_df = log_df # Placeholder
+        # Placeholder for filtering logic (Step 5)
+        filtered_df = log_df # Show all data for now
 
         # --- Display Section ---
         st.markdown("---")
-        # Show count based on the DataFrame to be displayed (currently unfiltered)
-        st.write(f"Displaying {len(filtered_df)} records (filtering not applied yet):")
+        st.write(f"Displaying {len(filtered_df)} records (filtering not applied yet):") # Update count later
         st.dataframe(
-            filtered_df, # Display DataFrame
-            use_container_width=True,
-            hide_index=True,
-            column_config={ # Column formatting from previous step
+            filtered_df,
+            use_container_width=True, hide_index=True,
+            column_config={ # Keep formatting
                 "Date Required": st.column_config.DatetimeColumn("Date Reqd.", format="DD-MM-YYYY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted On", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Quantity", format="%d"),
@@ -323,8 +351,7 @@ with tab2:
                 "Note": st.column_config.TextColumn("Notes", width="medium"),
             }
         )
-
-    else: # Handle case where log_df was empty from the start
+    else:
          st.info("No indent records found or unable to load data.")
 
 
