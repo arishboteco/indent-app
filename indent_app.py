@@ -60,22 +60,29 @@ with st.form("indent_form"):
     for i in range(st.session_state.item_count):
         col1, col2 = st.columns([2, 1])
 
-        selected_item = col1.selectbox(
-            f"Select item {i+1}",
-            options=item_names,
-            index=None,
-            placeholder="Type to search...",
-            key=f"item_{i}"
-        )
+selected_item = col1.selectbox(
+    f"Select item {i+1}",
+    options=item_names,
+    index=None,
+    placeholder="Type to search...",
+    key=f"item_{i}"
+)
 
-        note = col1.text_input("Note (optional)", key=f"note_{i}")
+note = col1.text_input("Note (optional)", key=f"note_{i}")
 
-        purchase_unit = item_to_unit.get(selected_item, "")
-        col2.write(f"Unit: {purchase_unit}")
-        qty = col2.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
+if selected_item:
+    # Trim whitespace just in case
+    clean_item = selected_item.strip()
+    purchase_unit = item_to_unit.get(clean_item, "N/A")
+    col2.write(f"Unit: {purchase_unit}")
+else:
+    purchase_unit = ""
 
-        if selected_item and qty > 0:
-            items.append((selected_item, qty, purchase_unit, note))
+qty = col2.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
+
+if selected_item and qty > 0:
+    items.append((selected_item, qty, purchase_unit, note))
+
 
     # Show summary table
     if items:
