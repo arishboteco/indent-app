@@ -1,6 +1,9 @@
-﻿streamlit
+streamlit
+pandas
 gspread
 oauth2client
-pandas
-pillow
+Pillow
 fpdf2
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
