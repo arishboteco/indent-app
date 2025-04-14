@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
 import gspread
-# *** ADDED/Corrected Imports for Type Hints and FPDF ***
-from gspread import Client, Spreadsheet, Worksheet
+# *** ADD FPDF Import ***
 from fpdf import FPDF
 # *** ***
 from oauth2client.service_account import ServiceAccountCredentials
@@ -10,7 +9,7 @@ from datetime import datetime, date
 import json
 from PIL import Image
 from collections import Counter
-# *** ADDED/Corrected Imports for Type Hints ***
+# *** ADD Type Hinting Imports ***
 from typing import Any, Dict, List, Tuple, Optional
 # *** ***
 
@@ -118,20 +117,37 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     pdf.cell(col_widths['unit'], 7, "Unit", border=1, ln=0, align='C', fill=True)
     pdf.cell(col_widths['note'], 7, "Note", border=1, ln=1, align='C', fill=True)
     pdf.set_font("Helvetica", "", 9)
+    line_height = 6
     for item, qty, unit, note in data['items']:
-        start_y = pdf.get_y(); current_x = pdf.l_margin
-        pdf.multi_cell(col_widths['item'], 6, str(item), border='LR', align='L', ln=3); item_y = pdf.get_y()
-        current_x += col_widths['item']; pdf.set_xy(current_x, start_y)
-        pdf.cell(col_widths['qty'], 6, str(qty), border='R', ln=0, align='C'); qty_y = pdf.get_y()
-        current_x += col_widths['qty']; pdf.set_xy(current_x, start_y)
-        pdf.cell(col_widths['unit'], 6, str(unit), border='R', ln=0, align='C'); unit_y = pdf.get_y()
-        current_x += col_widths['unit']; pdf.set_xy(current_x, start_y)
-        pdf.multi_cell(col_widths['note'], 6, str(note if note else "-"), border='R', align='L', ln=3); note_y = pdf.get_y()
-        max_y = max(item_y, qty_y, unit_y, note_y) # Find max Y reached by cells in row
-        pdf.line(pdf.l_margin, max_y, pdf.l_margin + sum(col_widths.values()), max_y) # Draw bottom border
-        pdf.set_y(max_y) # Ensure cursor is below the drawn line
-        pdf.ln(0.1) # Add tiny space before next potential row's top border
-    return pdf.output() # Returns bytes
+        start_y = pdf.get_y()
+        current_x = pdf.l_margin
+        # Use multi_cell for potentially long fields
+        pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L', ln=3)
+        item_y = pdf.get_y()
+        current_x += col_widths['item']
+        pdf.set_xy(current_x, start_y) # Reset X, keep Y for next cell
+
+        pdf.cell(col_widths['qty'], line_height, str(qty), border='R', ln=0, align='C')
+        qty_y = start_y + line_height # Estimate Y position after cell
+        current_x += col_widths['qty']
+        pdf.set_xy(current_x, start_y)
+
+        pdf.cell(col_widths['unit'], line_height, str(unit), border='R', ln=0, align='C')
+        unit_y = start_y + line_height
+        current_x += col_widths['unit']
+        pdf.set_xy(current_x, start_y)
+
+        pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L', ln=3)
+        note_y = pdf.get_y()
+
+        # Determine max Y position to draw the bottom border correctly
+        max_y = max(item_y, qty_y, unit_y, note_y, start_y + line_height)
+        pdf.line(pdf.l_margin, max_y, pdf.l_margin + sum(col_widths.values()), max_y)
+        pdf.set_y(max_y) # Move cursor down past the tallest cell + border
+        # pdf.ln(0.1) # Small gap before next row's top border (implicit)
+
+    # Output PDF as bytes
+    return pdf.output()
 
 
 # --- Streamlit App UI ---
@@ -186,7 +202,7 @@ with col3_btn:
         st.session_state.item_count = 1
         st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1)
         st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
-        st.rerun() # Explicit rerun useful here after clearing
+        st.rerun()
 
 
 st.markdown("---")
@@ -198,15 +214,16 @@ for i in range(st.session_state.item_count):
     with st.expander(label=f"Item {i}: {item_label}", expanded=True):
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.selectbox( # Item selection
+            st.selectbox(
                 label=f"Item Select {i}", options=[""] + master_item_names, key=f"item_{i}",
                 placeholder="Type or select an item...", label_visibility="collapsed",
                 on_change=update_unit_display, args=(i,)
             )
-            st.text_input(f"Note {i}", key=f"note_{i}", placeholder="Special instructions...", label_visibility="collapsed") # Note
+            st.text_input(f"Note {i}", key=f"note_{i}", placeholder="Special instructions...", label_visibility="collapsed")
         with col2:
             st.markdown("**Unit:**"); unit_to_display = st.session_state.get(f"unit_display_{i}", "-"); st.markdown(f"### {unit_to_display}") # Dynamic Unit
-            st.number_input(f"Quantity {i}", min_value=1, step=1, key=f"qty_{i}", label_visibility="collapsed") # Qty
+            st.number_input(f"Quantity {i}", min_value=1, step=1, key=f"qty_{i}", label_visibility="collapsed")
+
 
 # --- Immediate Duplicate Check & Feedback ---
 current_selected_items = [st.session_state.get(f"item_{k}") for k in range(st.session_state.item_count) if st.session_state.get(f"item_{k}")]
@@ -224,9 +241,7 @@ if not current_dept: error_messages.append("Select department.")
 tooltip_message = "".join(error_messages)
 
 st.markdown("---")
-# Display warning/error prominently if submit is disabled
 if submit_disabled and tooltip_message:
-    # Use error styling specifically for duplicates as it blocks submission
     if has_duplicates_in_state:
         dup_list = ", ".join(duplicates_found.keys())
         st.error(f"⚠️ Cannot submit: Duplicate items detected ({dup_list}). Please fix.")
@@ -272,7 +287,8 @@ if st.button("Submit Indent Request", type="primary", use_container_width=True, 
             st.session_state.item_count = 1
             st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1)
             st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
-            st.rerun()
+
+            st.rerun() # Rerun to show success/summary
 
     except Exception as e: st.error(f"Error during submission: {e}"); st.exception(e)
 
@@ -289,19 +305,28 @@ if 'submitted_data_for_summary' in st.session_state:
     st.markdown(f"**Total Submitted Quantity:** {total_submitted_qty}")
     st.markdown("---")
 
-    # --- Generate PDF Data & Download Button ---
+    # --- Generate PDF Data & Download Button (with fix) ---
     try:
-        pdf_bytes = create_indent_pdf(submitted_data)
+        pdf_output = create_indent_pdf(submitted_data)
+        # *** Explicitly convert to bytes ***
+        pdf_bytes_data = bytes(pdf_output)
         st.download_button(
              label="📄 Download Indent PDF",
-             data=pdf_bytes,
+             data=pdf_bytes_data, # Use bytes data
              file_name=f"Indent_{submitted_data['mrn']}.pdf",
              mime="application/pdf",
-             key='pdf_download_button' # Add a key for stability
+             key='pdf_download_button'
          )
     except Exception as pdf_error:
         st.error(f"Could not generate PDF: {pdf_error}")
+        st.exception(pdf_error) # Show traceback for PDF errors
 
-    if st.button("Start New Indent", key='new_indent_button'): # Add key
+
+    if st.button("Start New Indent", key='new_indent_button'):
+        # Clear only the summary data state before rerun
         del st.session_state['submitted_data_for_summary']
         st.rerun()
+
+# --- Optional Full State Debug ---
+# st.sidebar.write("### Session State")
+# st.sidebar.json(st.session_state.to_dict())
