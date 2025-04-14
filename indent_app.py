@@ -9,8 +9,6 @@ import json
 from PIL import Image
 from collections import Counter
 from typing import Any, Dict, List, Tuple, Optional
-# Note: io import no longer needed as df.info() debug removed
-# import io
 
 # --- Configuration & Setup ---
 
@@ -34,6 +32,7 @@ try:
     creds_dict: Dict[str, Any] = json.loads(json_creds_data) if isinstance(json_creds_data, str) else json_creds_data
     creds: ServiceAccountCredentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client: Client = gspread.authorize(creds)
+    # Access worksheets with detailed error handling
     try:
         indent_log_spreadsheet: Spreadsheet = client.open("Indent Log")
         sheet: Worksheet = indent_log_spreadsheet.sheet1 # Log Sheet
@@ -83,6 +82,7 @@ if not master_item_names: st.error("Item list empty/not loaded. Cannot proceed."
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
+    # ... (Same as before) ...
     try:
         all_mrns = sheet.col_values(1); next_number = 1
         if len(all_mrns) > 1:
@@ -98,6 +98,7 @@ def generate_mrn() -> str:
 
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
+    # ... (Same as before) ...
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
@@ -128,11 +129,10 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
 # --- Function to Load and Clean Log Data (Cached) ---
 @st.cache_data(ttl=60) # Reduced TTL cache
 def load_indent_log_data() -> pd.DataFrame:
+    # ... (Same as before) ...
     try:
         records = sheet.get_all_records()
-        if not records:
-            expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
-            return pd.DataFrame(columns=expected_cols)
+        if not records: expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']; return pd.DataFrame(columns=expected_cols)
         df = pd.DataFrame(records)
         expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
         missing_cols = [col for col in expected_cols if col not in df.columns]
@@ -178,7 +178,28 @@ with tab1:
     dept = st.selectbox("Select Department", DEPARTMENTS, index=dept_index, key="selected_dept", placeholder="Select department...")
     delivery_date = st.date_input("Date Required", value=date.today(), min_value=date.today(), format="DD/MM/YYYY", key="selected_date")
 
-    # --- Add/Remove/Clear Buttons ---
+    # --- Item Input Section ---
+    st.markdown("---")
+    st.subheader("Enter Items:")
+
+    # --- Item Input Rows (NO Filtering, WITH Expander) ---
+    for i in range(st.session_state.item_count):
+        item_label = st.session_state.get(f"item_{i}", "New")
+        with st.expander(label=f"Item {i}: {item_label}", expanded=True):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.selectbox(
+                    label=f"Item Select {i}", options=[""] + master_item_names, key=f"item_{i}",
+                    placeholder="Type or select an item...", label_visibility="collapsed",
+                    on_change=update_unit_display, args=(i,)
+                )
+                st.text_input(f"Note {i}", key=f"note_{i}", placeholder="Special instructions...", label_visibility="collapsed")
+            with col2:
+                st.markdown("**Unit:**"); unit_to_display = st.session_state.get(f"unit_display_{i}", "-"); st.markdown(f"### {unit_to_display}") # Dynamic Unit
+                st.number_input(f"Quantity {i}", min_value=1, step=1, key=f"qty_{i}", label_visibility="collapsed")
+
+    # --- Add/Remove/Clear Buttons (MOVED HERE) ---
+    st.markdown("---") # Separator before buttons
     col1_btn, col2_btn, col3_btn = st.columns([1, 1, 1])
     with col1_btn:
         if st.button("➕ Add Item", key="add_item_tab1"):
@@ -200,20 +221,6 @@ with tab1:
             st.session_state.item_count = 1
             st.session_state.setdefault("item_0", None); st.session_state.setdefault("qty_0", 1); st.session_state.setdefault("note_0", ""); st.session_state.setdefault("unit_display_0", "-")
             st.rerun() # Explicit rerun useful here after clearing
-
-    st.markdown("---"); st.subheader("Enter Items:")
-
-    # --- Item Input Rows (NO Filtering, WITH Expander) ---
-    for i in range(st.session_state.item_count):
-        item_label = st.session_state.get(f"item_{i}", "New")
-        with st.expander(label=f"Item {i}: {item_label}", expanded=True):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.selectbox(label=f"Item Select {i}", options=[""] + master_item_names, key=f"item_{i}", placeholder="Type or select an item...", label_visibility="collapsed", on_change=update_unit_display, args=(i,))
-                st.text_input(f"Note {i}", key=f"note_{i}", placeholder="Special instructions...", label_visibility="collapsed")
-            with col2:
-                st.markdown("**Unit:**"); unit_to_display = st.session_state.get(f"unit_display_{i}", "-"); st.markdown(f"### {unit_to_display}") # Dynamic Unit
-                st.number_input(f"Quantity {i}", min_value=1, step=1, key=f"qty_{i}", label_visibility="collapsed")
 
     # --- Immediate Duplicate Check & Feedback ---
     current_selected_items = [st.session_state.get(f"item_{k}") for k in range(st.session_state.item_count) if st.session_state.get(f"item_{k}")]
@@ -269,6 +276,7 @@ with tab1:
 
     # --- Display Post-Submission Summary (within Tab 1) ---
     if 'submitted_data_for_summary' in st.session_state:
+        # ... (Post-submission summary display logic - unchanged) ...
         submitted_data = st.session_state['submitted_data_for_summary']
         st.success(f"Indent submitted successfully! MRN: {submitted_data['mrn']}")
         st.balloons(); st.markdown("---"); st.subheader("Submitted Indent Summary")
@@ -297,8 +305,7 @@ with tab2:
             dept_options = sorted([d for d in DEPARTMENTS if d])
             min_date_log = date.today() - pd.Timedelta(days=30); max_date_log = date.today()
             if 'Date Required' in log_df.columns and not log_df['Date Required'].isnull().all():
-                 min_dt_val = log_df['Date Required'].dropna().min()
-                 max_dt_val = log_df['Date Required'].dropna().max()
+                 min_dt_val = log_df['Date Required'].dropna().min(); max_dt_val = log_df['Date Required'].dropna().max()
                  if pd.notna(min_dt_val): min_date_log = min_dt_val.date()
                  if pd.notna(max_dt_val): max_date_log = max_dt_val.date()
 
@@ -312,39 +319,24 @@ with tab2:
             with filt_col3:
                 item_search = st.text_input("Search by Item Name", key="filt_item")
 
-        # --- Apply Filters --- ### Logic Added ###
-        filtered_df = log_df.copy() # Start with a copy
-
-        try: # Wrap filtering in try-except
-            # Apply Date Range Filter
+        # --- Apply Filters ---
+        filtered_df = log_df.copy()
+        try:
             if 'Date Required' in filtered_df.columns and not filtered_df['Date Required'].isnull().all():
                 start_ts = pd.Timestamp(filt_start_date); end_ts = pd.Timestamp(filt_end_date)
                 date_filt_condition = (filtered_df['Date Required'].notna() & (filtered_df['Date Required'].dt.normalize() >= start_ts) & (filtered_df['Date Required'].dt.normalize() <= end_ts))
                 filtered_df = filtered_df[date_filt_condition]
-
-            # Apply Department Filter
-            if selected_depts and 'Department' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['Department'].isin(selected_depts)]
-
-            # Apply MRN Filter
-            if mrn_search and 'MRN' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['MRN'].astype(str).str.contains(mrn_search, case=False, na=False)]
-
-            # Apply Item Filter
-            if item_search and 'Item' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['Item'].astype(str).str.contains(item_search, case=False, na=False)]
-
-        except Exception as filter_e:
-            st.error(f"Error applying filters: {filter_e}")
-            filtered_df = log_df.copy() # Show unfiltered data on error
+            if selected_depts and 'Department' in filtered_df.columns: filtered_df = filtered_df[filtered_df['Department'].isin(selected_depts)]
+            if mrn_search and 'MRN' in filtered_df.columns: filtered_df = filtered_df[filtered_df['MRN'].astype(str).str.contains(mrn_search, case=False, na=False)]
+            if item_search and 'Item' in filtered_df.columns: filtered_df = filtered_df[filtered_df['Item'].astype(str).str.contains(item_search, case=False, na=False)]
+        except Exception as filter_e: st.error(f"Error applying filters: {filter_e}"); filtered_df = log_df.copy()
 
         # --- Display Section ---
         st.markdown("---")
-        st.write(f"Displaying {len(filtered_df)} matching records:") # Use filtered count
+        st.write(f"Displaying {len(filtered_df)} matching records:")
         st.dataframe(
-            filtered_df, # Display the FILTERED DataFrame
-            use_container_width=True, hide_index=True,
-            column_config={ # Keep column formatting
+            filtered_df, use_container_width=True, hide_index=True,
+            column_config={ # Column formatting
                 "Date Required": st.column_config.DatetimeColumn("Date Reqd.", format="DD-MM-YYYY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted On", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Quantity", format="%d"),
@@ -355,10 +347,7 @@ with tab2:
                 "Note": st.column_config.TextColumn("Notes", width="medium"),
             }
         )
-
-    else:
-         st.info("No indent records found or unable to load data.")
-
+    else: st.info("No indent records found or unable to load data.")
 
 # --- Optional Full State Debug ---
 # st.sidebar.write("### Session State")
