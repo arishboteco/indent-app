@@ -39,7 +39,15 @@ def generate_mrn():
 
 # Initialize session state for item tracking
 if "item_count" not in st.session_state:
-    st.session_state.item_count = 1
+    st.session_state.item_count = 0
+
+# Store inputs before adding item to preserve on rerun
+if st.button("+ Add Item"):
+    for i in range(st.session_state.item_count):
+        st.session_state[f"item_saved_{i}"] = st.session_state.get(f"item_{i}", "")
+        st.session_state[f"qty_saved_{i}"] = st.session_state.get(f"qty_{i}", 0)
+        st.session_state[f"note_saved_{i}"] = st.session_state.get(f"note_{i}", "")
+    st.session_state.item_count += 1
 
 st.title("Material Indent Form")
 
@@ -48,10 +56,6 @@ dept = st.selectbox("Select Department", ["Kitchen", "Bar", "Housekeeping", "Adm
 
 # Add delivery date
 delivery_date = st.date_input("Date Required", min_value=datetime.now().date())
-
-# Add more item rows
-if st.button("+ Add Item"):
-    st.session_state.item_count += 1
 
 items = []
 
@@ -63,17 +67,18 @@ with st.form("indent_form"):
         selected_item = col1.selectbox(
             f"Select item {i+1}",
             options=item_names,
-            index=None,
+            index=item_names.index(st.session_state.get(f"item_saved_{i}", item_names[0]))
+            if st.session_state.get(f"item_saved_{i}") in item_names else None,
             placeholder="Type to search...",
             key=f"item_{i}"
         )
 
-        note = col1.text_input("Note (optional)", key=f"note_{i}")
+        note = col1.text_input("Note (optional)", value=st.session_state.get(f"note_saved_{i}", ""), key=f"note_{i}")
 
         purchase_unit = item_to_unit[selected_item] if selected_item in item_to_unit else ""
         col2.text_input("Unit", value=purchase_unit, key=f"unit_{i}", disabled=True)
 
-        qty = col2.number_input("Qty", min_value=0, step=1, key=f"qty_{i}")
+        qty = col2.number_input("Qty", min_value=0, step=1, value=st.session_state.get(f"qty_saved_{i}", 0), key=f"qty_{i}")
 
         if selected_item and qty > 0:
             items.append((selected_item, qty, purchase_unit, note))
