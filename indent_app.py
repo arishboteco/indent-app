@@ -185,14 +185,10 @@ with tab1:
     st.divider(); st.subheader("Enter Items:")
 
     # --- Item Input Rows ---
-    # *** Calculate duplicates *before* the loop ***
-    current_selected_items_in_form = [
-        item['item'] for item in st.session_state.form_items if item.get('item')
-    ]
+    # Calculate duplicates before the loop
+    current_selected_items_in_form = [ item['item'] for item in st.session_state.form_items if item.get('item') ]
     duplicate_item_counts = Counter(current_selected_items_in_form)
-    duplicates_found_dict = {
-        item: count for item, count in duplicate_item_counts.items() if count > 1
-    }
+    duplicates_found_dict = { item: count for item, count in duplicate_item_counts.items() if count > 1 }
 
     items_to_render = list(st.session_state.form_items)
     for i, item_dict in enumerate(items_to_render):
@@ -208,15 +204,17 @@ with tab1:
         current_note = st.session_state.form_items[i].get('note', ''); current_unit = st.session_state.form_items[i].get('unit', '-')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
 
-        # *** MODIFIED: Add duplicate indicator to label ***
+        # Add duplicate indicator to label
         is_duplicate = current_item_value and current_item_value in duplicates_found_dict
         duplicate_indicator = "⚠️ " if is_duplicate else ""
         expander_label = f"{duplicate_indicator}**{item_label}** (Qty: {current_qty_from_dict}, Unit: {current_unit})"
 
         with st.expander(label=expander_label, expanded=True):
-            # Optional: Add warning inside expander too
-            # if is_duplicate:
-            #     st.warning(f"'{current_item_value}' is selected multiple times.", icon="⚠️")
+            # *** MODIFIED: Add warning message inside if duplicate ***
+            if is_duplicate:
+                st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
+
+            # Render input columns
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
             with col1: # Item Select
                 try: current_item_index = master_item_names.index(current_item_value) if current_item_value else 0
@@ -243,7 +241,8 @@ with tab1:
     submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1
     error_messages = []; tooltip_message = "Submit the current indent request."
     if not has_valid_items: error_messages.append("Add at least one valid item with quantity > 0.")
-    if has_duplicates: error_messages.append(f"Remove duplicate items marked with ⚠️: {', '.join(duplicates_found_dict.keys())}.")
+    # Message now refers to warning icon in label AND internal message
+    if has_duplicates: error_messages.append(f"Remove duplicate items (marked with ⚠️): {', '.join(duplicates_found_dict.keys())}.")
     if not current_dept_tab1: error_messages.append("Select a department.")
     st.divider()
     if error_messages:
@@ -252,30 +251,26 @@ with tab1:
 
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        final_items_to_submit: List[Tuple[str, int, str, str]] = []; final_item_names = set(); final_has_duplicates = False
-        # Final check before submission (belt & suspenders)
+        final_items_to_submit: List[Tuple[str, int, str, str]] = []; final_item_names = set();
+        # Final duplicate check
         final_check_items = [item['item'] for item in st.session_state.form_items if item.get('item')]
         final_check_counts = Counter(final_check_items)
         final_duplicates_dict = {item: count for item, count in final_check_counts.items() if count > 1}
-
         if bool(final_duplicates_dict):
              st.error(f"Duplicate items still detected ({', '.join(final_duplicates_dict.keys())}). Please remove duplicates.")
              st.stop()
 
-        for item_dict in st.session_state.form_items:
+        for item_dict in st.session_state.form_items: # Read final values from dict state
             selected_item = item_dict.get('item'); qty = item_dict.get('qty', 0); unit = item_dict.get('unit', 'N/A'); note = item_dict.get('note', '')
-            if selected_item and qty > 0:
-                # Duplicates already checked above, add directly
-                final_item_names.add(selected_item); final_items_to_submit.append((selected_item, qty, unit, note))
+            if selected_item and qty > 0: final_items_to_submit.append((selected_item, qty, unit, note)) # Dups already checked
 
-        if not final_items_to_submit: st.error("No valid items to submit."); st.stop() # Should be caught by validation, but check again
-
+        if not final_items_to_submit: st.error("No valid items to submit."); st.stop()
         try:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S");
             date_to_format = st.session_state.get("selected_date", date.today())
-            formatted_date = date_to_format.strftime("%d-%m-%Y") # DD-MM-YYYY for storage
+            formatted_date = date_to_format.strftime("%d-%m-%Y") # DD-MM-YYYY storage
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
@@ -338,6 +333,7 @@ with tab2:
         st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
             column_config={
+                 # Using DD/MM/YYYY display format based on stable code
                 "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD/MM/YYYY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Qty", format="%d"),
