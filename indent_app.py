@@ -7,8 +7,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, date
 import json
 from PIL import Image
-from collections import Counter
-from typing import Any, Dict, List, Tuple, Optional
+from collections import Counter, defaultdict # Added defaultdict
+from typing import Any, Dict, List, Tuple, Optional, DefaultDict
 import time # For generating unique IDs
 
 # --- Configuration & Setup ---
@@ -26,6 +26,8 @@ st.title("Material Indent Form")
 
 # Google Sheets setup & Credentials Handling
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"] # Define globally
+
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def connect_gsheets():
     # ... (connection logic remains the same) ...
@@ -54,34 +56,81 @@ def connect_gsheets():
 client, log_sheet, reference_sheet = connect_gsheets()
 if not client or not log_sheet or not reference_sheet: st.error("Failed Sheets connection."); st.stop()
 
-# --- Reference Data Loading Function (CACHED) ---
+# --- Reference Data Loading Function (MODIFIED FOR DEPARTMENT FILTERING) ---
 @st.cache_data(ttl=3600, show_spinner="Fetching item reference data...")
-def get_reference_data(_reference_sheet: Worksheet) -> Tuple[List[str], Dict[str, str]]:
-    # ... (function remains the same) ...
+def get_reference_data(_reference_sheet: Worksheet) -> Tuple[DefaultDict[str, List[str]], Dict[str, str]]:
+    """Fetches reference data including permitted departments.
+    Assumes columns: 0=Item, 1=Unit, 2=Permitted Departments.
+    Ignores Category/Sub-Category for now.
+    """
+    item_to_unit_lower: Dict[str, str] = {}
+    # Use defaultdict to easily append items to department lists
+    dept_to_items_map: DefaultDict[str, List[str]] = defaultdict(list)
+    all_items_list: List[str] = [""] # Start with blank option for selectbox
+
     try:
         all_data: List[List[str]] = _reference_sheet.get_all_values()
-        item_names: List[str] = [""]
-        item_to_unit_lower: Dict[str, str] = {}
-        processed_items_lower: set[str] = set()
         header_skipped: bool = False
+        valid_departments = set(dept for dept in DEPARTMENTS if dept) # Get valid dept names from constant
+
         for i, row in enumerate(all_data):
-            if not any(str(cell).strip() for cell in row): continue
-            if not header_skipped and i == 0 and (("item" in str(row[0]).lower() or "name" in str(row[0]).lower()) and "unit" in str(row[1]).lower()): header_skipped = True; continue
-            if len(row) >= 2:
-                item: str = str(row[0]).strip(); unit: str = str(row[1]).strip(); item_lower: str = item.lower()
-                if item and item_lower not in processed_items_lower: item_names.append(item); item_to_unit_lower[item_lower] = unit if unit else "N/A"; processed_items_lower.add(item_lower)
-        other_items = sorted([name for name in item_names if name]); item_names = [""] + other_items
-        return item_names, item_to_unit_lower
-    except gspread.exceptions.APIError as e: st.error(f"API Error loading reference: {e}"); return [""], {}
-    except Exception as e: st.error(f"Error loading reference: {e}"); return [""], {}
+            if not any(str(cell).strip() for cell in row): continue # Skip empty rows
+
+            # Basic header detection (adjust if needed)
+            if not header_skipped and i == 0 and ("item" in str(row[0]).lower() or "unit" in str(row[1]).lower()):
+                header_skipped = True
+                continue
+
+            if len(row) >= 3: # Need at least Item, Unit, Permitted Depts
+                item: str = str(row[0]).strip()
+                unit: str = str(row[1]).strip()
+                permitted_depts_str: str = str(row[2]).strip()
+                item_lower: str = item.lower()
+
+                if item: # Process only if item name is present
+                    all_items_list.append(item)
+                    item_to_unit_lower[item_lower] = unit if unit else "N/A"
+
+                    # Determine which departments this item belongs to
+                    if not permitted_depts_str or permitted_depts_str.lower() == 'all':
+                        # Add to all valid departments if blank or 'all'
+                        for dept_name in valid_departments:
+                            dept_to_items_map[dept_name].append(item)
+                    else:
+                        # Add to specific departments listed
+                        departments = [dept.strip() for dept in permitted_depts_str.split(',') if dept.strip() in valid_departments]
+                        for dept_name in departments:
+                            dept_to_items_map[dept_name].append(item)
+
+        # Sort item lists within each department
+        for dept_name in dept_to_items_map:
+            dept_to_items_map[dept_name].sort()
+
+        # Also create a list of all unique items found for potential fallback/reference
+        # all_items_list = sorted(list(set(all_items_list))) # Sort unique items
+
+        return dept_to_items_map, item_to_unit_lower
+
+    except gspread.exceptions.APIError as e: st.error(f"API Error loading reference: {e}"); return defaultdict(list), {}
+    except IndexError: st.error("Error reading reference sheet. Does it have at least 3 columns (Item, Unit, Permitted Departments)?"); return defaultdict(list), {}
+    except Exception as e: st.error(f"Error loading reference: {e}"); return defaultdict(list), {}
 
 
-# --- Load Reference Data into State ---
-if reference_sheet: master_item_names, item_to_unit_lower = get_reference_data(reference_sheet); st.session_state['master_item_list'] = master_item_names; st.session_state['item_to_unit_lower'] = item_to_unit_lower
-else: st.session_state['master_item_list'] = [""]; st.session_state['item_to_unit_lower'] = {}
-master_item_names = st.session_state.get('master_item_list', [""])
-item_to_unit_lower = st.session_state.get('item_to_unit_lower', {})
-if len(master_item_names) <= 1: st.error("Item list empty/not loaded.")
+# --- Load Reference Data and Initialize State ---
+if 'data_loaded' not in st.session_state: st.session_state.data_loaded = False
+
+if not st.session_state.data_loaded and reference_sheet:
+    dept_map, unit_map = get_reference_data(reference_sheet)
+    st.session_state['dept_items_map'] = dept_map
+    st.session_state['item_to_unit_lower'] = unit_map
+    st.session_state['available_items_for_dept'] = [""] # Initialize empty
+    st.session_state.data_loaded = True # Mark as loaded
+elif not reference_sheet:
+     st.error("Cannot load reference data.")
+     st.session_state['dept_items_map'] = defaultdict(list)
+     st.session_state['item_to_unit_lower'] = {}
+     st.session_state['available_items_for_dept'] = [""]
+
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
@@ -113,7 +162,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     pdf.cell(col_widths['item'], 7, "Item", border=1, ln=0, align='C', fill=True); pdf.cell(col_widths['qty'], 7, "Qty", border=1, ln=0, align='C', fill=True); pdf.cell(col_widths['unit'], 7, "Unit", border=1, ln=0, align='C', fill=True); pdf.cell(col_widths['note'], 7, "Note", border=1, ln=1, align='C', fill=True)
     pdf.set_font("Helvetica", "", 9); line_height = 6
     for item_tuple in data['items']:
-        item, qty, unit, note = item_tuple
+        item, qty, unit, note = item_tuple # Still expects 4 items per tuple
         start_y = pdf.get_y()
         pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L'); y1 = pdf.get_y()
         pdf.set_xy(pdf.l_margin + col_widths['item'], start_y); pdf.multi_cell(col_widths['qty'], line_height, str(qty), border='R', align='C'); y2 = pdf.get_y()
@@ -155,6 +204,7 @@ with tab1:
     if 'last_dept' not in st.session_state: st.session_state.last_dept = None
     if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
     if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
+    # Initialized available_items_for_dept after data load now
 
     # --- Helper Functions ---
     def add_item(count=1):
@@ -164,42 +214,91 @@ with tab1:
             st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1, 'note': '', 'unit': '-'})
 
     def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1))
+    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
 
-    # Removed state reset from here
-    def clear_all_items():
-        st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
-
-    # Removed state reset from here
     def handle_add_items_click():
         num_to_add = st.session_state.get('num_items_to_add', 1)
         add_item(count=num_to_add)
 
-    # --- Item Select Callback ---
-    def update_unit_display_and_item_value(item_id, selectbox_key):
-        selected_item_name = st.session_state[selectbox_key]; unit = "-";
-        if selected_item_name: unit = item_to_unit_lower.get(selected_item_name.lower(), "N/A"); unit = unit if unit else "-"
+    # --- NEW Callback: Update available items when department changes ---
+    def department_changed_callback():
+        selected_dept = st.session_state.get("selected_dept")
+        dept_map = st.session_state.get("dept_items_map", defaultdict(list))
+        available_items = [""] # Start with blank option
+
+        if selected_dept:
+            # Combine items specific to the dept + items available to "All"
+            specific_items = dept_map.get(selected_dept, [])
+            # Add items listed under "All" if your mapping includes such a key, or handle blank permitted_depts logic here
+            # all_dept_items = dept_map.get("All Departments", []) # Assuming "All Departments" is the key used in get_reference_data
+            # combined_items = sorted(list(set(specific_items + all_dept_items)))
+            # For simplicity now, just use specific items. Add 'All' logic if needed.
+            combined_items = sorted(list(set(specific_items)))
+            available_items.extend(combined_items)
+
+        st.session_state.available_items_for_dept = available_items
+
+        # Reset existing item selections as they might be invalid for the new dept
+        for i in range(len(st.session_state.form_items)):
+            st.session_state.form_items[i]['item'] = None
+            st.session_state.form_items[i]['unit'] = '-'
+            st.session_state.form_items[i]['note'] = ''
+            # Reset category/subcategory later if implemented
+            # st.session_state.form_items[i]['category'] = None
+            # st.session_state.form_items[i]['subcategory'] = None
+
+
+    # --- Item Select Callback (Updates Unit ONLY for now) ---
+    def update_unit_callback(item_id, selectbox_key):
+        item_map = st.session_state.get("item_to_unit_lower", {})
+        selected_item_name = st.session_state.get(selectbox_key) # Read directly from widget state
+        unit = "-"
+        if selected_item_name:
+            unit = item_map.get(selected_item_name.lower(), "N/A")
+            unit = unit if unit else "-"
+
+        # Update the specific item dict in the list
         for i, item_dict in enumerate(st.session_state.form_items):
-            if item_dict['id'] == item_id: st.session_state.form_items[i]['item'] = selected_item_name if selected_item_name else None; st.session_state.form_items[i]['unit'] = unit; break
+            if item_dict['id'] == item_id:
+                # Update item name based on selection, and the unit
+                st.session_state.form_items[i]['item'] = selected_item_name if selected_item_name else None
+                st.session_state.form_items[i]['unit'] = unit
+                break
+
 
     # --- Header Inputs ---
     st.subheader("Indent Details")
     col_head1, col_head2 = st.columns(2)
     with col_head1:
-        DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
+        # Use global DEPARTMENTS list
         last_dept = st.session_state.get('last_dept'); dept_index = 0
         try: current_selection = st.session_state.get("selected_dept", last_dept);
         except Exception: current_selection=None
         if current_selection and current_selection in DEPARTMENTS:
             try: dept_index = DEPARTMENTS.index(current_selection)
             except ValueError: dept_index = 0
-        dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select the requesting department." )
+        # *** Add on_change callback to department selectbox ***
+        dept = st.selectbox(
+            "Select Department*",
+            DEPARTMENTS,
+            index=dept_index,
+            key="selected_dept",
+            help="Select the requesting department. Item list will update.",
+            on_change=department_changed_callback # Trigger update
+        )
     with col_head2:
         delivery_date = st.date_input( "Date Required*", value=st.session_state.get("selected_date", date.today()), min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed." )
+
+    # --- Initialize available items based on initial/current department ---
+    # This needs to run after the selectbox is defined but before items are rendered
+    # We can call the callback manually if state isn't set, but ensure it has the map first
+    if 'dept_items_map' in st.session_state and 'available_items_for_dept' not in st.session_state:
+         # If state exists but available items not set, likely first run after loading
+         department_changed_callback() # Call it once to populate based on default dept
 
     st.divider(); st.subheader("Enter Items:")
 
     # --- Item Input Rows ---
-    # ... (Item input loop remains the same) ...
     current_selected_items_in_form = [ item['item'] for item in st.session_state.form_items if item.get('item') ]
     duplicate_item_counts = Counter(current_selected_items_in_form)
     duplicates_found_dict = { item: count for item, count in duplicate_item_counts.items() if count > 1 }
@@ -208,10 +307,13 @@ with tab1:
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
         qty_key = f"qty_{item_id}"; note_key = f"note_{item_id}"; selectbox_key = f"item_select_{item_id}"
+        # Sync non-item state first
         if qty_key in st.session_state:
             widget_qty = st.session_state[qty_key]
             st.session_state.form_items[i]['qty'] = int(widget_qty) if isinstance(widget_qty, (int, float, str)) and str(widget_qty).isdigit() else 1
         if note_key in st.session_state: st.session_state.form_items[i]['note'] = st.session_state[note_key]
+
+        # Read current values from potentially updated dict
         current_item_value = st.session_state.form_items[i].get('item'); current_qty_from_dict = st.session_state.form_items[i].get('qty', 1)
         current_note = st.session_state.form_items[i].get('note', ''); current_unit = st.session_state.form_items[i].get('unit', '-')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
@@ -220,13 +322,28 @@ with tab1:
         expander_label = f"{duplicate_indicator}**{item_label}** (Qty: {current_qty_from_dict}, Unit: {current_unit})"
 
         with st.expander(label=expander_label, expanded=True):
-            if is_duplicate:
-                st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
+            if is_duplicate: st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
+
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
             with col1: # Item Select
-                try: current_item_index = master_item_names.index(current_item_value) if current_item_value else 0
-                except ValueError: current_item_index = 0
-                st.selectbox( "Item Select", options=master_item_names, index=current_item_index, key=selectbox_key, placeholder="Type or select an item...", label_visibility="collapsed", on_change=update_unit_display_and_item_value, args=(item_id, selectbox_key) )
+                # *** Use dynamically updated item list ***
+                available_options = st.session_state.get('available_items_for_dept', [""])
+                # Determine index based on current_item_value IF it exists in available_options
+                try:
+                    current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
+                except ValueError:
+                    current_item_index = 0 # Default to blank if not found
+
+                st.selectbox(
+                    "Item Select",
+                    options=available_options, # Use filtered list
+                    index=current_item_index,
+                    key=selectbox_key,
+                    placeholder="Select item for department...", # Updated placeholder
+                    label_visibility="collapsed",
+                    on_change=update_unit_callback, # Use callback that only updates unit for now
+                    args=(item_id, selectbox_key)
+                 )
             with col2: # Note
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
             with col3: # Quantity
@@ -240,7 +357,6 @@ with tab1:
     # --- Add Item Controls ---
     col_add1, col_add2, col_add3 = st.columns([1, 2, 2])
     with col_add1:
-        # Removed explicit value binding
         st.number_input( "Add:", min_value=1, step=1, key='num_items_to_add', label_visibility="collapsed" )
     with col_add2:
         st.button( "➕ Add Rows", on_click=handle_add_items_click, use_container_width=True )
@@ -262,10 +378,9 @@ with tab1:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
         tooltip_message = "Please fix the issues listed above."
 
-
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        # ... (Submission logic remains the same) ...
+        # ... (Submission logic remains the same, still submits Item, Qty, Unit, Note) ...
         final_items_to_submit: List[Tuple[str, int, str, str]] = []; final_item_names = set();
         final_check_items = [item['item'] for item in st.session_state.form_items if item.get('item')]
         final_check_counts = Counter(final_check_items)
@@ -275,6 +390,7 @@ with tab1:
              st.stop()
         for item_dict in st.session_state.form_items:
             selected_item = item_dict.get('item'); qty = item_dict.get('qty', 0); unit = item_dict.get('unit', 'N/A'); note = item_dict.get('note', '')
+            # For now, we only collect these 4 pieces of info for submission
             if selected_item and qty > 0: final_items_to_submit.append((selected_item, qty, unit, note))
         if not final_items_to_submit: st.error("No valid items to submit."); st.stop()
         try:
@@ -283,12 +399,14 @@ with tab1:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S");
             date_to_format = st.session_state.get("selected_date", date.today())
             formatted_date = date_to_format.strftime("%d-%m-%Y") # DD-MM-YYYY storage
+            # Row structure for sheet matches current format (MRN, Timestamp, Dept, Date, Item, Qty, Unit, Note)
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
                     try: log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED'); load_indent_log_data.clear()
                     except gspread.exceptions.APIError as e: st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: st.error(f"Submission error: {e}"); st.exception(e); st.stop()
+                # Update submitted data structure (still only 4 item details)
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit}
                 st.session_state['last_dept'] = current_dept_tab1;
                 clear_all_items();
@@ -302,20 +420,17 @@ with tab1:
         st.success(f"Indent submitted! MRN: {submitted_data['mrn']}")
         st.balloons(); st.divider(); st.subheader("Submitted Indent Summary")
         st.info(f"**MRN:** {submitted_data['mrn']} | **Dept:** {submitted_data['dept']} | **Reqd Date:** {submitted_data['date']}")
+        # DataFrame still uses 4 columns
         submitted_df = pd.DataFrame(submitted_data['items'], columns=["Item", "Qty", "Unit", "Note"])
         st.dataframe(submitted_df, hide_index=True, use_container_width=True)
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Qty:** {total_submitted_qty}"); st.divider()
         try:
-            pdf_data = create_indent_pdf(submitted_data)
+            pdf_data = create_indent_pdf(submitted_data) # PDF function still expects 4 item details
             pdf_bytes: bytes = bytes(pdf_data) # Ensure bytes
             st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
         except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error} (Type: {type(pdf_data)})"); st.exception(pdf_error)
-        # *** MODIFIED: Removed reset of num_items_to_add here ***
-        if st.button("Start New Indent"):
-            st.session_state['submitted_data_for_summary'] = None
-            # st.session_state.num_items_to_add = 1 # Removed this line
-            st.rerun()
+        if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.rerun() # No need to reset num_items_to_add here
 
 # --- TAB 2: View Indents ---
 with tab2:
