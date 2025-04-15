@@ -154,7 +154,6 @@ with tab1:
     if "form_items" not in st.session_state: st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
     if 'last_dept' not in st.session_state: st.session_state.last_dept = None
     if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
-    # Initialize state for the number input only if it doesn't exist
     if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
 
     # --- Helper Functions ---
@@ -166,16 +165,14 @@ with tab1:
 
     def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1))
 
-    # *** MODIFIED: Removed reset for num_items_to_add ***
+    # Removed state reset from here
     def clear_all_items():
         st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
-        # The number input 'num_items_to_add' retains its value
 
-    # *** MODIFIED: Removed reset for num_items_to_add ***
+    # Removed state reset from here
     def handle_add_items_click():
         num_to_add = st.session_state.get('num_items_to_add', 1)
         add_item(count=num_to_add)
-        # Do not reset num_items_to_add here anymore
 
     # --- Item Select Callback ---
     def update_unit_display_and_item_value(item_id, selectbox_key):
@@ -243,19 +240,12 @@ with tab1:
     # --- Add Item Controls ---
     col_add1, col_add2, col_add3 = st.columns([1, 2, 2])
     with col_add1:
-        # *** MODIFIED: Removed explicit value binding ***
-        st.number_input(
-            "Add:",
-            min_value=1,
-            step=1,
-            key='num_items_to_add', # Still needs key
-            label_visibility="collapsed"
-            # value=st.session_state.num_items_to_add # Removed this line
-        )
+        # Removed explicit value binding
+        st.number_input( "Add:", min_value=1, step=1, key='num_items_to_add', label_visibility="collapsed" )
     with col_add2:
-        st.button( "➕ Add Rows", on_click=handle_add_items_click, use_container_width=True ) # Callback unchanged
+        st.button( "➕ Add Rows", on_click=handle_add_items_click, use_container_width=True )
     with col_add3:
-         st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True) # Callback unchanged
+         st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True)
 
     # --- Validation ---
     # ... (Validation logic remains the same) ...
@@ -301,7 +291,7 @@ with tab1:
                     except Exception as e: st.error(f"Submission error: {e}"); st.exception(e); st.stop()
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit}
                 st.session_state['last_dept'] = current_dept_tab1;
-                clear_all_items(); # Calls clear_all_items (which no longer resets num_items_to_add)
+                clear_all_items();
                 st.rerun()
         except Exception as e: st.error(f"Submission error: {e}"); st.exception(e)
 
@@ -321,8 +311,11 @@ with tab1:
             pdf_bytes: bytes = bytes(pdf_data) # Ensure bytes
             st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
         except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error} (Type: {type(pdf_data)})"); st.exception(pdf_error)
-        # Reset num_items_to_add here when starting fresh
-        if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.session_state.num_items_to_add = 1; st.rerun()
+        # *** MODIFIED: Removed reset of num_items_to_add here ***
+        if st.button("Start New Indent"):
+            st.session_state['submitted_data_for_summary'] = None
+            # st.session_state.num_items_to_add = 1 # Removed this line
+            st.rerun()
 
 # --- TAB 2: View Indents ---
 with tab2:
