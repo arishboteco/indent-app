@@ -15,22 +15,19 @@ import urllib.parse # For WhatsApp link encoding
 
 # --- Configuration & Setup ---
 
-# *** Logo display code removed ***
-# try:
-#     logo = Image.open("logo.png")
-#     st.image(logo, width=75)
-# except FileNotFoundError:
-#     st.warning("Logo image 'logo.png' not found.")
-# except Exception as e:
-#     st.warning(f"Could not load logo: {e}")
+try:
+    logo = Image.open("logo.png")
+    st.image(logo, width=75)
+except FileNotFoundError:
+    st.warning("Logo image 'logo.png' not found.")
+except Exception as e:
+    st.warning(f"Could not load logo: {e}")
 
-# --- Main Application Title ---
 st.title("Material Indent Form")
 
 # Google Sheets setup & Credentials Handling
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"] # Define globally
-TOP_N_SUGGESTIONS = 7 # How many suggestions to show
 
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def connect_gsheets():
@@ -108,46 +105,6 @@ if 'submitted_data_for_summary' not in st.session_state: st.session_state.submit
 if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
 if 'requested_by' not in st.session_state: st.session_state.requested_by = ""
 
-# --- Function to Load Log Data (Cached) ---
-@st.cache_data(ttl=300, show_spinner="Loading indent history...")
-def load_indent_log_data() -> pd.DataFrame:
-    # ... (function remains the same) ...
-    if not log_sheet: return pd.DataFrame()
-    try:
-        records = log_sheet.get_all_records(head=1);
-        if not records: expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']; return pd.DataFrame(columns=expected_cols)
-        df = pd.DataFrame(records); expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
-        for col in expected_cols:
-            if col not in df.columns: df[col] = pd.NA
-        if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
-        if 'Date Required' in df.columns: df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
-        if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
-        for col in ['Item', 'Unit', 'Note', 'MRN', 'Department', 'Requested By']:
-             if col in df.columns: df[col] = df[col].fillna('')
-        display_cols = [col for col in expected_cols if col in df.columns]; df = df[display_cols]
-        df = df.dropna(subset=['Timestamp'])
-        return df.sort_values(by='Timestamp', ascending=False, na_position='last')
-    except gspread.exceptions.APIError as e: st.error(f"API Error loading log: {e}"); return pd.DataFrame()
-    except Exception as e: st.error(f"Error loading/cleaning log: {e}"); return pd.DataFrame()
-
-# --- NEW Function: Calculate Top Items per Department (Cached) ---
-@st.cache_data(ttl=3600, show_spinner="Analyzing history for suggestions...")
-def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[str, List[str]]:
-    """Calculates the top N most frequent items requested per department."""
-    if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns: return {}
-    log_df_clean = log_df.dropna(subset=['Department', 'Item'])
-    log_df_clean = log_df_clean[log_df_clean['Item'] != '']; log_df_clean['Item'] = log_df_clean['Item'].astype(str)
-    if log_df_clean.empty: return {}
-    try:
-        top_items = log_df_clean.groupby('Department')['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
-        return top_items.to_dict()
-    except Exception as e: st.warning(f"Could not calculate top items: {e}"); return {}
-
-# --- Load historical data & Calculate suggestions ---
-log_data_for_suggestions = load_indent_log_data()
-top_items_map = calculate_top_items_per_dept(log_data_for_suggestions, top_n=TOP_N_SUGGESTIONS)
-st.session_state['top_items_map'] = top_items_map
-
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
@@ -165,9 +122,9 @@ def generate_mrn() -> str:
     return f"MRN-{str(next_number).zfill(3)}"
 
 
-# --- PDF Generation Function ---
+# --- PDF Generation Function (Handles Grouping & Requester) ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
-    # ... (function remains the same) ...
+    # ... (function remains the same as previous version) ...
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(8)
     pdf.set_font("Helvetica", "", 11); pdf.cell(95, 6, f"MRN: {data.get('mrn', 'N/A')}", ln=0); pdf.cell(95, 6, f"Requested By: {data.get('requester', 'N/A')}", ln=1, align='R')
@@ -189,19 +146,52 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     return pdf.output()
 
 
+# --- Function to Load Log Data (Cached) ---
+@st.cache_data(ttl=60, show_spinner="Loading indent history...")
+def load_indent_log_data() -> pd.DataFrame:
+    # ... (function remains the same) ...
+    if not log_sheet: return pd.DataFrame()
+    try:
+        records = log_sheet.get_all_records(head=1);
+        if not records: expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']; return pd.DataFrame(columns=expected_cols)
+        df = pd.DataFrame(records); expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
+        for col in expected_cols:
+            if col not in df.columns: df[col] = pd.NA
+        if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+        if 'Date Required' in df.columns: df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
+        if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
+        for col in ['Item', 'Unit', 'Note', 'MRN', 'Department', 'Requested By']:
+             if col in df.columns: df[col] = df[col].fillna('')
+        display_cols = [col for col in expected_cols if col in df.columns]; df = df[display_cols]
+        df = df.dropna(subset=['Timestamp'])
+        return df.sort_values(by='Timestamp', ascending=False, na_position='last')
+    except gspread.exceptions.APIError as e: st.error(f"API Error loading log: {e}"); return pd.DataFrame()
+    except Exception as e: st.error(f"Error loading/cleaning log: {e}"); return pd.DataFrame()
+
+
 # --- UI Tabs ---
 tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 
 # --- TAB 1: New Indent Form ---
 with tab1:
+    # --- Session State Init ---
+    if "form_items" not in st.session_state or not isinstance(st.session_state.form_items, list) or not st.session_state.form_items:
+         st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
+    else:
+        for item_d in st.session_state.form_items: item_d.setdefault('category', None); item_d.setdefault('subcategory', None)
+    if 'last_dept' not in st.session_state: st.session_state.last_dept = None
+    if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
+    if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
+    if 'requested_by' not in st.session_state: st.session_state.requested_by = ""
+
     # --- Helper Functions ---
     def add_item(count=1):
         if not isinstance(count, int) or count < 1: count = 1
         for _ in range(count): new_id = f"item_{time.time_ns()}"; st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None})
     def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1))
-    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}] # Doesn't clear requester
+    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}] # Removed requested_by reset
     def handle_add_items_click(): num_to_add = st.session_state.get('num_items_to_add', 1); add_item(count=num_to_add)
-    def add_suggested_item(item_name_to_add): # Adds suggested item with details
+    def add_suggested_item(item_name_to_add):
         if item_name_to_add:
             current_items = [item_dict.get('item') for item_dict in st.session_state.form_items]
             if item_name_to_add in current_items: st.toast(f"'{item_name_to_add}' is already in the list.", icon="ℹ️"); return
@@ -266,7 +256,6 @@ with tab1:
     st.subheader("Enter Items:")
 
     # --- Item Input Rows ---
-    # ... (Item input loop remains the same) ...
     current_selected_items_in_form = [ item['item'] for item in st.session_state.form_items if item.get('item') ]
     duplicate_item_counts = Counter(current_selected_items_in_form); duplicates_found_dict = { item: count for item, count in duplicate_item_counts.items() if count > 1 }
     items_to_render = list(st.session_state.form_items)
@@ -279,22 +268,30 @@ with tab1:
         current_category = st.session_state.form_items[i].get('category'); current_subcategory = st.session_state.form_items[i].get('subcategory')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"; is_duplicate = current_item_value and current_item_value in duplicates_found_dict
         duplicate_indicator = "⚠️ " if is_duplicate else ""; expander_label = f"{duplicate_indicator}**{item_label}**"
+
         with st.expander(label=expander_label, expanded=True):
             if is_duplicate: st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
-            st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}") # Correct layout
+
+            # Input columns and moved info display
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
-            with col1:
+            with col1: # Item Select & Cat/SubCat Info
                 available_options = st.session_state.get('available_items_for_dept', [""])
                 try: current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
                 except ValueError: current_item_index = 0
                 st.selectbox( "Item Select", options=available_options, index=current_item_index, key=selectbox_key, placeholder="Select item for department...", label_visibility="collapsed", on_change=item_selected_callback, args=(item_id, selectbox_key) )
-            with col2: st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
-            with col3: st.number_input( "Quantity", min_value=1, step=1, value=current_qty, key=qty_key, label_visibility="collapsed" ); st.caption(f"Unit: {current_unit or '-'}")
-            with col4:
+                # *** CORRECTED: Cat/SubCat caption IS below selectbox ***
+                st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
+            with col2: # Note
+                st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
+            with col3: # Quantity & Unit
+                st.number_input( "Quantity", min_value=1, step=1, value=current_qty, key=qty_key, label_visibility="collapsed" )
+                st.caption(f"Unit: {current_unit or '-'}") # Unit below Qty
+            with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
                  else: st.write("")
+            # *** CORRECTED: Divider removed from inside expander ***
 
-    st.divider()
+    st.divider() # Divider after the whole item list
 
     # --- Add Item Controls ---
     col_add1, col_add2, col_add3 = st.columns([1, 2, 2])
@@ -303,7 +300,7 @@ with tab1:
     with col_add3: st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True)
 
     # --- Validation ---
-    # ... (Validation logic remains the same) ...
+    # ... (Validation logic includes requester_name_filled) ...
     has_duplicates = bool(duplicates_found_dict); has_valid_items = any(item.get('item') and item.get('qty', 0) > 0 for item in st.session_state.form_items)
     current_dept_tab1 = st.session_state.get("selected_dept", ""); requester_name_filled = bool(st.session_state.get("requested_by", ""))
     submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1 or not requester_name_filled
@@ -317,10 +314,9 @@ with tab1:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
         tooltip_message = "Please fix the issues listed above."
 
-
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        # ... (Submission logic remains the same) ...
+        # ... (Submission logic includes requester, sorts by Cat/SubCat) ...
         final_items_to_submit_unsorted: List[Tuple[str, int, str, str, Optional[str], Optional[str]]] = []
         final_check_items = [item['item'] for item in st.session_state.form_items if item.get('item')]; final_check_counts = Counter(final_check_items)
         final_duplicates_dict = {item: count for item, count in final_check_counts.items() if count > 1}
@@ -346,7 +342,6 @@ with tab1:
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'requester': requester, 'items': final_items_to_submit}
                 st.session_state['last_dept'] = current_dept_tab1; clear_all_items(); st.rerun()
         except Exception as e: st.error(f"Submission error: {e}"); st.exception(e)
-
 
     # --- Post-Submission Summary ---
     if st.session_state.get('submitted_data_for_summary'):
