@@ -13,25 +13,23 @@ import time # For generating unique IDs
 
 # --- Configuration & Setup ---
 
-# *** MODIFIED: Display logo in sidebar, smaller ***
-st.set_page_config(layout="wide") # Optional: Use wide layout if sidebar takes up space
+# *** MODIFIED: Logo width reduced further ***
 try:
     logo = Image.open("logo.png")
-    # Display in sidebar with reduced width
-    st.sidebar.image(logo, width=100)
+    st.image(logo, width=75) # Smaller width
 except FileNotFoundError:
-    st.sidebar.warning("Logo image 'logo.png' not found.")
+    st.warning("Logo image 'logo.png' not found.")
 except Exception as e:
-    st.sidebar.warning(f"Could not load logo: {e}")
+    st.warning(f"Could not load logo: {e}")
 
-# --- Main Application Title (remains in main area) ---
+# --- Main Application Title ---
 st.title("Material Indent Form")
 
 # Google Sheets setup & Credentials Handling
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def connect_gsheets():
-    """Connects to Google Sheets and returns client, log sheet, and reference sheet."""
+    # ... (connection logic remains the same) ...
     try:
         if "gcp_service_account" not in st.secrets: st.error("Missing GCP credentials!"); return None, None, None
         json_creds_data: Any = st.secrets["gcp_service_account"]
@@ -60,7 +58,7 @@ if not client or not log_sheet or not reference_sheet: st.error("Failed Sheets c
 # --- Reference Data Loading Function (CACHED) ---
 @st.cache_data(ttl=3600, show_spinner="Fetching item reference data...")
 def get_reference_data(_reference_sheet: Worksheet) -> Tuple[List[str], Dict[str, str]]:
-    """Fetches and processes reference data."""
+    # ... (function remains the same) ...
     try:
         all_data: List[List[str]] = _reference_sheet.get_all_values()
         item_names: List[str] = [""]
@@ -78,6 +76,7 @@ def get_reference_data(_reference_sheet: Worksheet) -> Tuple[List[str], Dict[str
     except gspread.exceptions.APIError as e: st.error(f"API Error loading reference: {e}"); return [""], {}
     except Exception as e: st.error(f"Error loading reference: {e}"); return [""], {}
 
+
 # --- Load Reference Data into State ---
 if reference_sheet: master_item_names, item_to_unit_lower = get_reference_data(reference_sheet); st.session_state['master_item_list'] = master_item_names; st.session_state['item_to_unit_lower'] = item_to_unit_lower
 else: st.session_state['master_item_list'] = [""]; st.session_state['item_to_unit_lower'] = {}
@@ -87,7 +86,7 @@ if len(master_item_names) <= 1: st.error("Item list empty/not loaded.")
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
-    """Generates the next MRN."""
+    # ... (function remains the same) ...
     if not log_sheet: return f"MRN-ERR-NOSHEET"
     try:
         all_mrns = log_sheet.col_values(1); next_number = 1
@@ -101,9 +100,10 @@ def generate_mrn() -> str:
     except gspread.exceptions.APIError as e: st.error(f"API Error generating MRN: {e}"); return f"MRN-ERR-API-{datetime.now().strftime('%H%M%S')}"
     except Exception as e: st.error(f"Error generating MRN: {e}"); return f"MRN-ERR-EXC-{datetime.now().strftime('%H%M%S')}"
 
+
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
-    """Creates a PDF document for the indent request, returns bytes."""
+    # ... (function remains the same) ...
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
@@ -122,7 +122,8 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'] + col_widths['unit'], start_y); pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L'); y4 = pdf.get_y()
         final_y = max(y1, y2, y3, y4); pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y)
         pdf.set_y(final_y); pdf.ln(0.1)
-    return pdf.output() # Returns bytes
+    return pdf.output()
+
 
 # --- Function to Load Log Data (Cached) ---
 @st.cache_data(ttl=60, show_spinner="Loading indent history...")
@@ -136,7 +137,6 @@ def load_indent_log_data() -> pd.DataFrame:
         for col in expected_cols:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
-        # *** Using DD/MM/YYYY format for parsing date from sheet ***
         if 'Date Required' in df.columns: df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
         if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department']:
@@ -145,89 +145,61 @@ def load_indent_log_data() -> pd.DataFrame:
     except gspread.exceptions.APIError as e: st.error(f"API Error loading log: {e}"); return pd.DataFrame()
     except Exception as e: st.error(f"Error loading/cleaning log: {e}"); return pd.DataFrame()
 
-# --- UI Definition ---
-
-# --- Sidebar Elements (Sticky) ---
-st.sidebar.header("Indent Details")
-
-DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
-last_dept = st.session_state.get('last_dept') # Get last used dept if available
-dept_index = 0
-# Use get() for selected_dept as it might not exist on first run after clearing
-current_selection = st.session_state.get("selected_dept", last_dept)
-if current_selection and current_selection in DEPARTMENTS:
-    try: dept_index = DEPARTMENTS.index(current_selection)
-    except ValueError: dept_index = 0
-
-# *** MODIFIED: Moved Department selectbox to sidebar ***
-dept = st.sidebar.selectbox(
-    "Select Department*",
-    DEPARTMENTS,
-    index=dept_index,
-    key="selected_dept",
-    help="Select the requesting department."
-)
-
-# *** MODIFIED: Moved Date input to sidebar ***
-delivery_date = st.sidebar.date_input(
-    "Date Required*",
-    value=st.session_state.get("selected_date", date.today()),
-    min_value=date.today(),
-    # Use supported format for input widget
-    format="DD/MM/YYYY",
-    key="selected_date",
-    help="Select the date materials are needed."
-)
-
-
-# --- Main Area Tabs ---
+# --- UI Tabs ---
 tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 
 # --- TAB 1: New Indent Form ---
 with tab1:
-    # Session State Init remains the same
+    # --- Session State Init ---
     if "form_items" not in st.session_state: st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
-    if 'last_dept' not in st.session_state: st.session_state.last_dept = None # Keep track of last used dept
+    if 'last_dept' not in st.session_state: st.session_state.last_dept = None
     if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
 
-    # --- Helper Functions (remain the same) ---
+    # --- Helper Functions ---
     def add_item(): st.session_state.form_items.append({'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'})
     def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item())
     def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
 
-    # --- Item Select Callback (remains the same) ---
+    # --- Item Select Callback ---
     def update_unit_display_and_item_value(item_id, selectbox_key):
         selected_item_name = st.session_state[selectbox_key]; unit = "-";
         if selected_item_name: unit = item_to_unit_lower.get(selected_item_name.lower(), "N/A"); unit = unit if unit else "-"
         for i, item_dict in enumerate(st.session_state.form_items):
             if item_dict['id'] == item_id: st.session_state.form_items[i]['item'] = selected_item_name if selected_item_name else None; st.session_state.form_items[i]['unit'] = unit; break
 
-    # --- Header Inputs (Moved to Sidebar) ---
-    # No longer needed here
+    # --- Header Inputs (Back in Main Area) ---
+    st.subheader("Indent Details")
+    col_head1, col_head2 = st.columns(2)
 
-    st.subheader("Enter Items:") # Subheader remains in main area
+    with col_head1:
+        DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
+        last_dept = st.session_state.get('last_dept'); dept_index = 0
+        try: current_selection = st.session_state.get("selected_dept", last_dept);
+        except Exception: current_selection=None
+        if current_selection and current_selection in DEPARTMENTS:
+            try: dept_index = DEPARTMENTS.index(current_selection)
+            except ValueError: dept_index = 0
+        dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select the requesting department." )
+
+    with col_head2:
+        delivery_date = st.date_input( "Date Required*", value=st.session_state.get("selected_date", date.today()), min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed." )
+
+    st.divider(); st.subheader("Enter Items:")
 
     # --- Item Input Rows ---
+    # ... (Item input loop remains the same as previous working version) ...
     items_to_render = list(st.session_state.form_items)
-    if not items_to_render: # Should not happen due to remove_item logic, but as fallback
-        st.info("Click 'Add Another Item' to begin.")
-        add_item() # Add initial item if list is somehow empty
-        items_to_render = list(st.session_state.form_items) # Refresh list
-
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
         qty_key = f"qty_{item_id}"; note_key = f"note_{item_id}"; selectbox_key = f"item_select_{item_id}"
-        # Sync dict state from widget state
         if qty_key in st.session_state:
             widget_qty = st.session_state[qty_key]
             st.session_state.form_items[i]['qty'] = int(widget_qty) if isinstance(widget_qty, (int, float, str)) and str(widget_qty).isdigit() else 1
         if note_key in st.session_state: st.session_state.form_items[i]['note'] = st.session_state[note_key]
-        # Read potentially updated values from dict for rendering
         current_item_value = st.session_state.form_items[i].get('item'); current_qty_from_dict = st.session_state.form_items[i].get('qty', 1)
         current_note = st.session_state.form_items[i].get('note', ''); current_unit = st.session_state.form_items[i].get('unit', '-')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
         expander_label = f"**{item_label}** (Qty: {current_qty_from_dict}, Unit: {current_unit})"
-        # Render expander
         with st.expander(label=expander_label, expanded=True):
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
             with col1: # Item Select
@@ -240,18 +212,17 @@ with tab1:
                 st.number_input( "Quantity", min_value=1, step=1, value=current_qty_from_dict, key=qty_key, label_visibility="collapsed" )
             with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
-                 else: st.write("") # Placeholder
+                 else: st.write("")
 
     st.divider()
     col1_btn, col2_btn = st.columns(2)
     with col1_btn: st.button("➕ Add Another Item", on_click=add_item, use_container_width=True)
-    with col2_btn: st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True) # Renamed for clarity
+    with col2_btn: st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True)
 
     # --- Validation ---
-    # *** Read dept/date from sidebar keys ***
-    current_dept_tab1 = st.session_state.get("selected_dept", "") # Read from state key set by sidebar widget
-    current_date_obj = st.session_state.get("selected_date", date.today()) # Read from state key set by sidebar widget
-
+    # ... (Validation logic remains the same) ...
+    current_dept_tab1 = st.session_state.get("selected_dept", "")
+    current_date_obj = st.session_state.get("selected_date", date.today())
     items_for_validation = [item['item'] for item in st.session_state.form_items if item.get('item')]
     item_counts = Counter(items_for_validation); duplicates_found = {item: count for item, count in item_counts.items() if count > 1}
     has_duplicates = bool(duplicates_found); has_valid_items = any(item.get('item') and item.get('qty', 0) > 0 for item in st.session_state.form_items)
@@ -259,11 +230,12 @@ with tab1:
     error_messages = []; tooltip_message = "Submit the current indent request."
     if not has_valid_items: error_messages.append("Add at least one valid item with quantity > 0.")
     if has_duplicates: error_messages.append(f"Remove duplicate items: {', '.join(duplicates_found.keys())}.")
-    if not current_dept_tab1: error_messages.append("Select a department (in the sidebar).") # Hint location
+    if not current_dept_tab1: error_messages.append("Select a department.")
     st.divider()
     if error_messages:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
         tooltip_message = "Please fix the issues listed above."
+
 
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
@@ -279,10 +251,8 @@ with tab1:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S");
-            # *** Use date obj from sidebar state key ***
             date_to_format = st.session_state.get("selected_date", date.today())
-            # *** Using DD/MM/YYYY format for storage ***
-            formatted_date = date_to_format.strftime("%d-%m-%Y")
+            formatted_date = date_to_format.strftime("%d-%m-%Y") # Using DD-MM-YYYY based on stable code
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
@@ -290,9 +260,8 @@ with tab1:
                     except gspread.exceptions.APIError as e: st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: st.error(f"Submission error: {e}"); st.exception(e); st.stop()
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit}
-                st.session_state['last_dept'] = current_dept_tab1; # Keep last dept
-                clear_all_items(); # Clear items
-                # Don't reset sidebar inputs, let them persist
+                st.session_state['last_dept'] = current_dept_tab1;
+                clear_all_items();
                 st.rerun()
         except Exception as e: st.error(f"Submission error: {e}"); st.exception(e)
 
@@ -331,7 +300,6 @@ with tab2:
 
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
             with filt_col1:
-                # Use supported format for input widget
                 filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start", format="DD/MM/YYYY")
                 valid_end_min = filt_start_date;
                 filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end", format="DD/MM/YYYY")
@@ -347,7 +315,7 @@ with tab2:
         st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
             column_config={
-                 # *** Using DD/MM/YYYY display format ***
+                 # Using DD/MM/YYYY display format based on stable code
                 "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD/MM/YYYY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Qty", format="%d"),
