@@ -164,7 +164,11 @@ with tab1:
             st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1, 'note': '', 'unit': '-'})
 
     def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1))
-    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}] ; st.session_state.num_items_to_add = 1 # Also reset num input on clear
+
+    # *** MODIFIED: Removed state reset for num_items_to_add ***
+    def clear_all_items():
+        st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
+        # st.session_state.num_items_to_add = 1 # Removed this line
 
     def handle_add_items_click():
         num_to_add = st.session_state.get('num_items_to_add', 1)
@@ -261,6 +265,7 @@ with tab1:
 
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
+        # ... (Submission logic remains the same, line was already removed previously) ...
         final_items_to_submit: List[Tuple[str, int, str, str]] = []; final_item_names = set();
         final_check_items = [item['item'] for item in st.session_state.form_items if item.get('item')]
         final_check_counts = Counter(final_check_items)
@@ -286,8 +291,8 @@ with tab1:
                     except Exception as e: st.error(f"Submission error: {e}"); st.exception(e); st.stop()
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit}
                 st.session_state['last_dept'] = current_dept_tab1;
-                clear_all_items();
-                # *** Line removed: st.session_state.num_items_to_add = 1 ***
+                clear_all_items(); # Calls the modified clear_all_items
+                # Reset was moved from here to the clear_all_items and handle_add_items_click functions
                 st.rerun()
         except Exception as e: st.error(f"Submission error: {e}"); st.exception(e)
 
@@ -307,7 +312,7 @@ with tab1:
             pdf_bytes: bytes = bytes(pdf_data) # Ensure bytes
             st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
         except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error} (Type: {type(pdf_data)})"); st.exception(pdf_error)
-        if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.session_state.num_items_to_add = 1; st.rerun()
+        if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.session_state.num_items_to_add = 1; st.rerun() # Reset num_items here is fine as it's before next render
 
 # --- TAB 2: View Indents ---
 with tab2:
