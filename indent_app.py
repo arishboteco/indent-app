@@ -105,8 +105,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
-    # Use the date string as passed in data (already formatted DD-MM-YY)
-    pdf.cell(95, 7, f"MRN: {data['mrn']}", ln=0); pdf.cell(95, 7, f"Date Required: {data['date']}", ln=1, align='R')
+    pdf.cell(95, 7, f"MRN: {data['mrn']}", ln=0); pdf.cell(95, 7, f"Date Required: {data['date']}", ln=1, align='R') # Uses DD-MM-YY from data
     pdf.cell(0, 7, f"Department: {data['dept']}", ln=1); pdf.ln(7)
     pdf.set_font("Helvetica", "B", 10); pdf.set_fill_color(230, 230, 230)
     col_widths = {'item': 90, 'qty': 15, 'unit': 25, 'note': 60}
@@ -115,19 +114,11 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     for item_tuple in data['items']:
         item, qty, unit, note = item_tuple
         start_y = pdf.get_y()
-        pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L')
-        y1 = pdf.get_y()
-        pdf.set_xy(pdf.l_margin + col_widths['item'], start_y)
-        pdf.multi_cell(col_widths['qty'], line_height, str(qty), border='R', align='C')
-        y2 = pdf.get_y()
-        pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'], start_y)
-        pdf.multi_cell(col_widths['unit'], line_height, str(unit), border='R', align='C')
-        y3 = pdf.get_y()
-        pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'] + col_widths['unit'], start_y)
-        pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L')
-        y4 = pdf.get_y()
-        final_y = max(y1, y2, y3, y4)
-        pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y)
+        pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L'); y1 = pdf.get_y()
+        pdf.set_xy(pdf.l_margin + col_widths['item'], start_y); pdf.multi_cell(col_widths['qty'], line_height, str(qty), border='R', align='C'); y2 = pdf.get_y()
+        pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'], start_y); pdf.multi_cell(col_widths['unit'], line_height, str(unit), border='R', align='C'); y3 = pdf.get_y()
+        pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'] + col_widths['unit'], start_y); pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L'); y4 = pdf.get_y()
+        final_y = max(y1, y2, y3, y4); pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y)
         pdf.set_y(final_y); pdf.ln(0.1)
     return pdf.output()
 
@@ -144,7 +135,7 @@ def load_indent_log_data() -> pd.DataFrame:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
         if 'Date Required' in df.columns:
-            # *** FIX: Parse DD-MM-YY format from Google Sheet ***
+            # Parse DD-MM-YY format from Google Sheet
             df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%y', errors='coerce')
         if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department']:
@@ -188,10 +179,10 @@ with tab1:
         "Date Required*",
         value=st.session_state.get("selected_date", date.today()),
         min_value=date.today(),
-        # *** FIX: Set input format to DD-MM-YY ***
-        format="DD-MM-YY",
+        # *** FIX: Revert to a supported format for input widget ***
+        format="DD-MM-YYYY",
         key="selected_date",
-        help="Select the date materials are needed."
+        help="Select the date materials are needed (DD-MM-YYYY)."
     )
 
     st.divider(); st.subheader("Enter Items:")
@@ -256,7 +247,7 @@ with tab1:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); current_date_obj = st.session_state.get("selected_date", date.today())
-            # *** FIX: Format date as DD-MM-YY for storage ***
+            # Store date as DD-MM-YY
             formatted_date = current_date_obj.strftime("%d-%m-%y")
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
@@ -273,7 +264,7 @@ with tab1:
         submitted_data = st.session_state['submitted_data_for_summary']
         st.success(f"Indent submitted! MRN: {submitted_data['mrn']}")
         st.balloons(); st.divider(); st.subheader("Submitted Indent Summary")
-        # Display uses the formatted_date (DD-MM-YY) stored in submitted_data
+        # Display uses the DD-MM-YY formatted_date
         st.info(f"**MRN:** {submitted_data['mrn']} | **Dept:** {submitted_data['dept']} | **Reqd Date:** {submitted_data['date']}")
         submitted_df = pd.DataFrame(submitted_data['items'], columns=["Item", "Qty", "Unit", "Note"])
         st.dataframe(submitted_df, hide_index=True, use_container_width=True)
@@ -294,16 +285,15 @@ with tab2:
         st.divider()
         with st.expander("Filter Options", expanded=True):
             dept_options = sorted([d for d in log_df['Department'].unique() if d])
-            # Date range calculation remains the same, based on parsed datetime objects
             min_date_log = (log_df['Date Required'].dropna().min() if pd.notna(log_df['Date Required'].dropna().min()) else date.today() - pd.Timedelta(days=30)).date()
             max_date_log = (log_df['Date Required'].dropna().max() if pd.notna(log_df['Date Required'].dropna().max()) else date.today()).date()
             if min_date_log > max_date_log: min_date_log = max_date_log
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
             with filt_col1:
-                # *** FIX: Set filter input format to DD-MM-YY ***
-                filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start", format="DD-MM-YY")
+                # *** FIX: Revert to supported format for input widget ***
+                filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start", format="DD-MM-YYYY")
                 valid_end_min = filt_start_date;
-                filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end", format="DD-MM-YY")
+                filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end", format="DD-MM-YYYY")
             with filt_col2: selected_depts = st.multiselect("Department", options=dept_options, default=[], key="filt_dept"); mrn_search = st.text_input("MRN", key="filt_mrn", placeholder="e.g., MRN-005")
             with filt_col3: item_search = st.text_input("Item Name", key="filt_item", placeholder="e.g., Salt")
         filtered_df = log_df.copy()
@@ -316,7 +306,7 @@ with tab2:
         st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
             column_config={
-                # *** FIX: Set DataFrame display format to DD-MM-YY ***
+                # Display format remains DD-MM-YY
                 "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD-MM-YY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Qty", format="%d"),
