@@ -211,7 +211,7 @@ tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 with tab1:
     # --- Session State Init ---
     if "form_items" not in st.session_state or not isinstance(st.session_state.form_items, list) or not st.session_state.form_items:
-        st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
+         st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
     else:
         for item_d in st.session_state.form_items: item_d.setdefault('category', None); item_d.setdefault('subcategory', None)
     if 'last_dept' not in st.session_state: st.session_state.last_dept = None
@@ -283,7 +283,9 @@ with tab1:
     if 'dept_items_map' in st.session_state and 'available_items_for_dept' not in st.session_state:
          department_changed_callback()
     elif st.session_state.get("selected_dept") and not st.session_state.get('available_items_for_dept'):
+         # If dept selected but items empty, maybe callback failed or was missed, try again
          department_changed_callback()
+
 
     st.divider(); st.subheader("Enter Items:")
 
@@ -311,8 +313,8 @@ with tab1:
         with st.expander(label=expander_label, expanded=True):
             if is_duplicate: st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
 
-            # *** MODIFIED: Display Cat/SubCat/Unit info ***
-            st.markdown(f"**Category:** {current_category or '-'} | **Sub-Cat:** {current_subcategory or '-'}")
+            # *** MODIFIED: Use st.caption for Cat/SubCat ***
+            st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
             st.divider() # Separate info from inputs
 
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1]) # Input columns
@@ -320,16 +322,16 @@ with tab1:
                 available_options = st.session_state.get('available_items_for_dept', [""])
                 try: current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
                 except ValueError: current_item_index = 0
-                st.selectbox( "Item Select", options=available_options, index=current_item_index, key=selectbox_key, placeholder="Select item for department...", label_visibility="collapsed", on_change=item_selected_callback, args=(item_id, selectbox_key) )
+                st.selectbox( "Item Select", options=available_options, index=current_item_index, key=selectbox_key, placeholder="Select item for department...", label_visibility="collapsed", on_change=item_selected_callback, args=(item_id, selectbox_key) ) # Use combined callback
             with col2: # Note
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
             with col3: # Quantity
                 st.number_input( "Quantity", min_value=1, step=1, value=current_qty, key=qty_key, label_visibility="collapsed" )
-                # *** MODIFIED: Display Unit below Quantity using caption ***
+                # Display Unit below Quantity using caption
                 st.caption(f"Unit: {current_unit or '-'}")
             with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
-                 else: st.write("") # Placeholder to maintain layout if needed
+                 else: st.write("")
 
     st.divider()
 
@@ -354,9 +356,10 @@ with tab1:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
         tooltip_message = "Please fix the issues listed above."
 
+
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        # *** MODIFIED: Prepare 6-element tuple including category/subcategory ***
+        # ... (Submission logic remains the same, includes sorting by Cat/SubCat) ...
         final_items_to_submit_unsorted: List[Tuple[str, int, str, str, Optional[str], Optional[str]]] = []
         final_check_items = [item['item'] for item in st.session_state.form_items if item.get('item')]
         final_check_counts = Counter(final_check_items)
@@ -368,36 +371,24 @@ with tab1:
         for item_dict in st.session_state.form_items:
             selected_item = item_dict.get('item'); qty = item_dict.get('qty', 0); unit = item_dict.get('unit', '-'); note = item_dict.get('note', '')
             category = item_dict.get('category'); subcategory = item_dict.get('subcategory')
-            if selected_item and qty > 0:
-                final_items_to_submit_unsorted.append(( selected_item, qty, unit, note, category, subcategory ))
-
+            if selected_item and qty > 0: final_items_to_submit_unsorted.append(( selected_item, qty, unit, note, category or "Uncategorized", subcategory or "General" ))
         if not final_items_to_submit_unsorted: st.error("No valid items to submit."); st.stop()
 
-        # Sort items by Category, then Sub-Category, then Item Name
-        final_items_to_submit = sorted(
-            final_items_to_submit_unsorted,
-            # Use itemgetter for slightly cleaner sorting, handle None by replacing with empty string
-            key=lambda x: (str(x[4] or ''), str(x[5] or ''), str(x[0]))
-        )
+        final_items_to_submit = sorted( final_items_to_submit_unsorted, key=lambda x: (str(x[4] or ''), str(x[5] or ''), str(x[0])) )
 
         try:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S");
             date_to_format = st.session_state.get("selected_date", date.today())
-            formatted_date = date_to_format.strftime("%d-%m-%Y") # DD-MM-YYYY storage
-
-            # Log sheet still expects 8 columns for now
-            rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"]
-                           for item, qty, unit, note, cat, subcat in final_items_to_submit] # Unpack 6, use 4
-
+            formatted_date = date_to_format.strftime("%d-%m-%Y")
+            rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note, cat, subcat in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
                     try: log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED'); load_indent_log_data.clear()
                     except gspread.exceptions.APIError as e: st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: st.error(f"Submission error: {e}"); st.exception(e); st.stop()
-
-                st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit} # Store full 6-element tuples
+                st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit}
                 st.session_state['last_dept'] = current_dept_tab1;
                 clear_all_items();
                 st.rerun()
@@ -410,23 +401,12 @@ with tab1:
         st.success(f"Indent submitted! MRN: {submitted_data['mrn']}")
         st.balloons(); st.divider(); st.subheader("Submitted Indent Summary")
         st.info(f"**MRN:** {submitted_data['mrn']} | **Dept:** {submitted_data['dept']} | **Reqd Date:** {submitted_data['date']}")
-
-        # Create DataFrame with Category/SubCategory
-        submitted_df = pd.DataFrame(
-            submitted_data['items'],
-            columns=["Item", "Qty", "Unit", "Note", "Category", "Sub-Category"]
-        )
-        # Optional: Further group or style the dataframe display if needed
-        st.dataframe(submitted_df, hide_index=True, use_container_width=True,
-                      column_config={ # Define column config for new columns too
-                          "Category": st.column_config.TextColumn("Category"),
-                          "Sub-Category": st.column_config.TextColumn("Sub-Cat")
-                          })
-
+        submitted_df = pd.DataFrame( submitted_data['items'], columns=["Item", "Qty", "Unit", "Note", "Category", "Sub-Category"] )
+        st.dataframe(submitted_df, hide_index=True, use_container_width=True, column_config={ "Category": st.column_config.TextColumn("Category"), "Sub-Category": st.column_config.TextColumn("Sub-Cat") })
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Qty:** {total_submitted_qty}"); st.divider()
         try:
-            pdf_data = create_indent_pdf(submitted_data) # PDF function now uses the grouped data
+            pdf_data = create_indent_pdf(submitted_data)
             pdf_bytes: bytes = bytes(pdf_data)
             st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
         except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error} (Type: {type(pdf_data)})"); st.exception(pdf_error)
@@ -434,13 +414,12 @@ with tab1:
 
 # --- TAB 2: View Indents ---
 with tab2:
-    # ... (Tab 2 code remains the same - doesn't show Category/SubCategory yet) ...
+    # ... (Tab 2 code remains the same) ...
     st.subheader("View Past Indent Requests")
-    log_df = load_indent_log_data() # This function still only loads original columns
+    log_df = load_indent_log_data()
     if not log_df.empty:
         st.divider()
         with st.expander("Filter Options", expanded=True):
-            # ... (Filtering logic remains the same) ...
             dept_options = sorted([d for d in log_df['Department'].unique() if d])
             min_ts = log_df['Date Required'].dropna().min()
             max_ts = log_df['Date Required'].dropna().max()
