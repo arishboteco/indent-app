@@ -102,7 +102,6 @@ def generate_mrn() -> str:
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     """Creates a PDF document for the indent request, returns bytes."""
-    # This function remains unchanged from the previous version
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
@@ -192,7 +191,7 @@ with tab1:
         item_id = item_dict['id']
         qty_key = f"qty_{item_id}"; note_key = f"note_{item_id}"; selectbox_key = f"item_select_{item_id}"
 
-        # Update dictionary based on widget state *before* rendering label
+        # Update dictionary based on widget state before rendering label
         if qty_key in st.session_state:
             widget_qty = st.session_state[qty_key]
             st.session_state.form_items[i]['qty'] = int(widget_qty) if isinstance(widget_qty, (int, float, str)) and str(widget_qty).isdigit() else 1
@@ -203,7 +202,10 @@ with tab1:
         current_note = st.session_state.form_items[i].get('note', ''); current_unit = st.session_state.form_items[i].get('unit', '-')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
 
-        with st.expander(label=f"{item_label} (Qty: {current_qty_from_dict}, Unit: {current_unit})", expanded=True):
+        # *** FIX: Make item label bold in expander ***
+        expander_label = f"**{item_label}** (Qty: {current_qty_from_dict}, Unit: {current_unit})"
+
+        with st.expander(label=expander_label, expanded=True):
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
             with col1: # Item Select
                 try: current_item_index = master_item_names.index(current_item_value) if current_item_value else 0
@@ -215,7 +217,7 @@ with tab1:
                 st.number_input( "Quantity", min_value=1, step=1, value=current_qty_from_dict, key=qty_key, label_visibility="collapsed" )
             with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
-                 else: st.write("")
+                 else: st.write("") # Placeholder
 
     st.divider()
     col1_btn, col2_btn = st.columns(2)
@@ -271,18 +273,13 @@ with tab1:
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Qty:** {total_submitted_qty}"); st.divider()
         try:
-            # *** FIX: Explicitly cast create_indent_pdf output to bytes ***
             pdf_data = create_indent_pdf(submitted_data)
-            pdf_bytes: bytes = bytes(pdf_data) # Ensure it's bytes type
+            pdf_bytes: bytes = bytes(pdf_data) # Ensure bytes
             st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
-        except Exception as pdf_error:
-            # Print type for debugging if error persists
-            st.error(f"Could not generate PDF: {pdf_error} (Data type was: {type(pdf_data)})")
-            st.exception(pdf_error)
+        except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error} (Type: {type(pdf_data)})"); st.exception(pdf_error)
         if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.rerun()
 
 # --- TAB 2: View Indents ---
-# (Tab 2 code remains unchanged from the previous version)
 with tab2:
     st.subheader("View Past Indent Requests")
     log_df = load_indent_log_data()
