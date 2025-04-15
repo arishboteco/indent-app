@@ -15,14 +15,16 @@ import urllib.parse # For WhatsApp link encoding
 
 # --- Configuration & Setup ---
 
-try:
-    logo = Image.open("logo.png")
-    st.image(logo, width=75)
-except FileNotFoundError:
-    st.warning("Logo image 'logo.png' not found.")
-except Exception as e:
-    st.warning(f"Could not load logo: {e}")
+# *** Logo display code removed ***
+# try:
+#     logo = Image.open("logo.png")
+#     st.image(logo, width=75)
+# except FileNotFoundError:
+#     st.warning("Logo image 'logo.png' not found.")
+# except Exception as e:
+#     st.warning(f"Could not load logo: {e}")
 
+# --- Main Application Title ---
 st.title("Material Indent Form")
 
 # Google Sheets setup & Credentials Handling
@@ -58,7 +60,7 @@ def connect_gsheets():
 client, log_sheet, reference_sheet = connect_gsheets()
 if not client or not log_sheet or not reference_sheet: st.error("Failed Sheets connection."); st.stop()
 
-# --- Reference Data Loading Function ---
+# --- Reference Data Loading Function (Reads Category & Sub-Category) ---
 @st.cache_data(ttl=3600, show_spinner="Fetching item reference data...")
 def get_reference_data(_reference_sheet: Worksheet) -> Tuple[DefaultDict[str, List[str]], Dict[str, str], Dict[str, str], Dict[str, str]]:
     # ... (function remains the same) ...
@@ -86,7 +88,8 @@ def get_reference_data(_reference_sheet: Worksheet) -> Tuple[DefaultDict[str, Li
     except IndexError: st.error("Error reading reference sheet. Ensure 5 columns: Item, Unit, Permitted Depts, Category, Sub-Category."); return defaultdict(list), {}, {}, {}
     except Exception as e: st.error(f"Error loading reference: {e}"); return defaultdict(list), {}, {}, {}
 
-# --- Load Reference Data ---
+
+# --- Load Reference Data and Initialize State ---
 if 'data_loaded' not in st.session_state: st.session_state.data_loaded = False
 if not st.session_state.data_loaded and reference_sheet:
     dept_map, unit_map, cat_map, subcat_map = get_reference_data(reference_sheet)
@@ -96,14 +99,22 @@ if not st.session_state.data_loaded and reference_sheet:
 elif not reference_sheet:
      st.error("Cannot load reference data.")
      st.session_state['dept_items_map'] = defaultdict(list); st.session_state['item_to_unit_lower'] = {}; st.session_state['item_to_category_lower'] = {}; st.session_state['item_to_subcategory_lower'] = {}; st.session_state['available_items_for_dept'] = [""]
+if "form_items" not in st.session_state or not isinstance(st.session_state.form_items, list) or not st.session_state.form_items:
+     st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
+else:
+    for item_d in st.session_state.form_items: item_d.setdefault('category', None); item_d.setdefault('subcategory', None)
+if 'last_dept' not in st.session_state: st.session_state.last_dept = None
+if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
+if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
+if 'requested_by' not in st.session_state: st.session_state.requested_by = ""
 
 # --- Function to Load Log Data (Cached) ---
-@st.cache_data(ttl=300, show_spinner="Loading indent history...") # Cache log slightly longer
+@st.cache_data(ttl=300, show_spinner="Loading indent history...")
 def load_indent_log_data() -> pd.DataFrame:
-    # ... (function now handles 'Requested By' column) ...
+    # ... (function remains the same) ...
     if not log_sheet: return pd.DataFrame()
     try:
-        records = log_sheet.get_all_records(head=1)
+        records = log_sheet.get_all_records(head=1);
         if not records: expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']; return pd.DataFrame(columns=expected_cols)
         df = pd.DataFrame(records); expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
         for col in expected_cols:
@@ -114,52 +125,28 @@ def load_indent_log_data() -> pd.DataFrame:
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department', 'Requested By']:
              if col in df.columns: df[col] = df[col].fillna('')
         display_cols = [col for col in expected_cols if col in df.columns]; df = df[display_cols]
-        # Ensure Timestamp is datetime for sorting, drop rows where it failed parsing
         df = df.dropna(subset=['Timestamp'])
         return df.sort_values(by='Timestamp', ascending=False, na_position='last')
     except gspread.exceptions.APIError as e: st.error(f"API Error loading log: {e}"); return pd.DataFrame()
     except Exception as e: st.error(f"Error loading/cleaning log: {e}"); return pd.DataFrame()
 
 # --- NEW Function: Calculate Top Items per Department (Cached) ---
-@st.cache_data(ttl=3600, show_spinner="Analyzing history for suggestions...") # Cache for an hour
+@st.cache_data(ttl=3600, show_spinner="Analyzing history for suggestions...")
 def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[str, List[str]]:
     """Calculates the top N most frequent items requested per department."""
-    if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns:
-        return {}
-
-    # Ensure 'Item' column is string and handle potential NaN/empty strings
+    if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns: return {}
     log_df_clean = log_df.dropna(subset=['Department', 'Item'])
-    log_df_clean = log_df_clean[log_df_clean['Item'] != '']
-    log_df_clean['Item'] = log_df_clean['Item'].astype(str)
-
-    if log_df_clean.empty:
-        return {}
-
-    # Group by Department, count item frequency, get top N
+    log_df_clean = log_df_clean[log_df_clean['Item'] != '']; log_df_clean['Item'] = log_df_clean['Item'].astype(str)
+    if log_df_clean.empty: return {}
     try:
-        top_items = log_df_clean.groupby('Department')['Item'] \
-                              .apply(lambda x: x.value_counts().head(top_n).index.tolist())
+        top_items = log_df_clean.groupby('Department')['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
         return top_items.to_dict()
-    except Exception as e:
-        st.warning(f"Could not calculate top items: {e}")
-        return {}
+    except Exception as e: st.warning(f"Could not calculate top items: {e}"); return {}
 
-# --- Load historical data for suggestions ---
-# We need the log_df available early to calculate suggestions
+# --- Load historical data & Calculate suggestions ---
 log_data_for_suggestions = load_indent_log_data()
 top_items_map = calculate_top_items_per_dept(log_data_for_suggestions, top_n=TOP_N_SUGGESTIONS)
-st.session_state['top_items_map'] = top_items_map # Store in state for access
-
-
-# --- Initialize Session State Variables ---
-if "form_items" not in st.session_state or not isinstance(st.session_state.form_items, list) or not st.session_state.form_items:
-     st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
-else:
-    for item_d in st.session_state.form_items: item_d.setdefault('category', None); item_d.setdefault('subcategory', None)
-if 'last_dept' not in st.session_state: st.session_state.last_dept = None
-if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
-if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
-if 'requested_by' not in st.session_state: st.session_state.requested_by = ""
+st.session_state['top_items_map'] = top_items_map
 
 
 # --- MRN Generation ---
@@ -167,7 +154,7 @@ def generate_mrn() -> str:
     # ... (function remains the same) ...
     if not log_sheet: return f"MRN-ERR-NOSHEET"
     try: all_mrns = log_sheet.col_values(1); next_number = 1
-    except gspread.exceptions.APIError as e: st.error(f"API Error fetching MRNs: {e}"); return f"MRN-ERR-API-{datetime.now().strftime('%H%M%S')}" # Handle potential read error
+    except gspread.exceptions.APIError as e: st.error(f"API Error fetching MRNs: {e}"); return f"MRN-ERR-API-{datetime.now().strftime('%H%M%S')}"
     except Exception as e: st.error(f"Error fetching MRNs: {e}"); return f"MRN-ERR-EXC-{datetime.now().strftime('%H%M%S')}"
     if len(all_mrns) > 1:
         last_valid_num = 0
@@ -193,21 +180,12 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         if len(item_tuple) < 6: continue
         item, qty, unit, note, category, subcategory = item_tuple
         category = category or "Uncategorized"; subcategory = subcategory or "General"
-        if category != current_category:
-            pdf.ln(3); pdf.set_font("Helvetica", "B", 10); pdf.set_fill_color(210, 210, 210)
-            pdf.cell(0, 6, f"Category: {category}", ln=1, align='L', fill=True, border='LTRB')
-            current_category = category; current_subcategory = None; pdf.set_fill_color(230, 230, 230)
-        if subcategory != current_subcategory:
-            pdf.ln(1); pdf.set_font("Helvetica", "BI", 9)
-            pdf.cell(0, 5, f"  Sub-Category: {subcategory}", ln=1, align='L')
-            current_subcategory = subcategory
+        if category != current_category: pdf.ln(3); pdf.set_font("Helvetica", "B", 10); pdf.set_fill_color(210, 210, 210); pdf.cell(0, 6, f"Category: {category}", ln=1, align='L', fill=True, border='LTRB'); current_category = category; current_subcategory = None; pdf.set_fill_color(230, 230, 230)
+        if subcategory != current_subcategory: pdf.ln(1); pdf.set_font("Helvetica", "BI", 9); pdf.cell(0, 5, f"  Sub-Category: {subcategory}", ln=1, align='L'); current_subcategory = subcategory
         pdf.set_font("Helvetica", "", 9); line_height = 5.5; start_y = pdf.get_y()
-        pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L'); y1 = pdf.get_y()
-        pdf.set_xy(pdf.l_margin + col_widths['item'], start_y); pdf.multi_cell(col_widths['qty'], line_height, str(qty), border='R', align='C'); y2 = pdf.get_y()
-        pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'], start_y); pdf.multi_cell(col_widths['unit'], line_height, str(unit), border='R', align='C'); y3 = pdf.get_y()
-        pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'] + col_widths['unit'], start_y); pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L'); y4 = pdf.get_y()
-        final_y = max(start_y + line_height, y1, y2, y3, y4); pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y)
-        pdf.set_y(final_y); pdf.ln(0.1)
+        pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L'); y1 = pdf.get_y(); pdf.set_xy(pdf.l_margin + col_widths['item'], start_y); pdf.multi_cell(col_widths['qty'], line_height, str(qty), border='R', align='C'); y2 = pdf.get_y()
+        pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'], start_y); pdf.multi_cell(col_widths['unit'], line_height, str(unit), border='R', align='C'); y3 = pdf.get_y(); pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'] + col_widths['unit'], start_y); pdf.multi_cell(col_widths['note'], line_height, str(note if note else "-"), border='R', align='L'); y4 = pdf.get_y()
+        final_y = max(start_y + line_height, y1, y2, y3, y4); pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y); pdf.set_y(final_y); pdf.ln(0.1)
     return pdf.output()
 
 
@@ -221,47 +199,22 @@ with tab1:
         if not isinstance(count, int) or count < 1: count = 1
         for _ in range(count): new_id = f"item_{time.time_ns()}"; st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None})
     def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1))
-    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
+    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}] # Doesn't clear requester
     def handle_add_items_click(): num_to_add = st.session_state.get('num_items_to_add', 1); add_item(count=num_to_add)
-
-    # *** NEW: Helper function to add a suggested item ***
-    def add_suggested_item(item_name_to_add):
+    def add_suggested_item(item_name_to_add): # Adds suggested item with details
         if item_name_to_add:
-            # Check if already in list
             current_items = [item_dict.get('item') for item_dict in st.session_state.form_items]
-            if item_name_to_add in current_items:
-                st.toast(f"'{item_name_to_add}' is already in the list.", icon="ℹ️")
-                return
-
-            # Find details
-            unit_map = st.session_state.get("item_to_unit_lower", {})
-            cat_map = st.session_state.get("item_to_category_lower", {})
-            subcat_map = st.session_state.get("item_to_subcategory_lower", {})
-            item_lower = item_name_to_add.lower()
-            unit = unit_map.get(item_lower, "-"); unit = unit if unit else "-"
-            category = cat_map.get(item_lower)
-            subcategory = subcat_map.get(item_lower)
-
-            # Add new row with details
-            new_id = f"item_{time.time_ns()}"
-            st.session_state.form_items.append({
-                'id': new_id,
-                'item': item_name_to_add,
-                'qty': 1, # Default qty
-                'note': '', # Default note
-                'unit': unit,
-                'category': category,
-                'subcategory': subcategory
-            })
-
+            if item_name_to_add in current_items: st.toast(f"'{item_name_to_add}' is already in the list.", icon="ℹ️"); return
+            unit_map = st.session_state.get("item_to_unit_lower", {}); cat_map = st.session_state.get("item_to_category_lower", {}); subcat_map = st.session_state.get("item_to_subcategory_lower", {})
+            item_lower = item_name_to_add.lower(); unit = unit_map.get(item_lower, "-"); unit = unit if unit else "-"; category = cat_map.get(item_lower); subcategory = subcat_map.get(item_lower)
+            new_id = f"item_{time.time_ns()}"; st.session_state.form_items.append({'id': new_id, 'item': item_name_to_add, 'qty': 1, 'note': '', 'unit': unit, 'category': category, 'subcategory': subcategory})
 
     # --- Department Change Callback ---
     def department_changed_callback():
         selected_dept = st.session_state.get("selected_dept"); dept_map = st.session_state.get("dept_items_map", defaultdict(list)); available_items = [""]
         if selected_dept: specific_items = dept_map.get(selected_dept, []); combined_items = sorted(list(set(specific_items))); available_items.extend(combined_items)
         st.session_state.available_items_for_dept = available_items
-        for i in range(len(st.session_state.form_items)): # Reset items
-            st.session_state.form_items[i]['item'] = None; st.session_state.form_items[i]['unit'] = '-'; st.session_state.form_items[i]['note'] = ''; st.session_state.form_items[i]['category'] = None; st.session_state.form_items[i]['subcategory'] = None
+        for i in range(len(st.session_state.form_items)): st.session_state.form_items[i]['item'] = None; st.session_state.form_items[i]['unit'] = '-'; st.session_state.form_items[i]['note'] = ''; st.session_state.form_items[i]['category'] = None; st.session_state.form_items[i]['subcategory'] = None
 
     # --- Item Selection Callback ---
     def item_selected_callback(item_id, selectbox_key):
@@ -296,31 +249,19 @@ with tab1:
 
     st.divider()
 
-    # --- NEW: Suggested Items Section ---
+    # --- Suggested Items Section ---
     selected_dept_for_suggestions = st.session_state.get("selected_dept")
     if selected_dept_for_suggestions and 'top_items_map' in st.session_state:
         suggestions = st.session_state.top_items_map.get(selected_dept_for_suggestions, [])
         items_already_in_form = [item_d.get('item') for item_d in st.session_state.form_items if item_d.get('item')]
-        # Filter suggestions to exclude items already in the form
         valid_suggestions = [item for item in suggestions if item not in items_already_in_form]
-
         if valid_suggestions:
             st.subheader("✨ Quick Add Common Items")
-            # Display buttons in columns - adjust number of columns as needed
-            num_suggestion_cols = min(len(valid_suggestions), 5) # Max 5 suggestions per row
-            suggestion_cols = st.columns(num_suggestion_cols)
+            num_suggestion_cols = min(len(valid_suggestions), 5); suggestion_cols = st.columns(num_suggestion_cols)
             for idx, item_name in enumerate(valid_suggestions):
                 col_index = idx % num_suggestion_cols
-                with suggestion_cols[col_index]:
-                    # Use item name in key for uniqueness
-                    st.button(
-                        f"+ {item_name}",
-                        key=f"suggest_{selected_dept_for_suggestions}_{item_name}", # More specific key
-                        on_click=add_suggested_item,
-                        args=(item_name,),
-                        use_container_width=True
-                    )
-            st.divider() # Divider after suggestions
+                with suggestion_cols[col_index]: st.button( f"+ {item_name}", key=f"suggest_{selected_dept_for_suggestions}_{item_name}", on_click=add_suggested_item, args=(item_name,), use_container_width=True)
+            st.divider()
 
     st.subheader("Enter Items:")
 
@@ -340,7 +281,7 @@ with tab1:
         duplicate_indicator = "⚠️ " if is_duplicate else ""; expander_label = f"{duplicate_indicator}**{item_label}**"
         with st.expander(label=expander_label, expanded=True):
             if is_duplicate: st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
-            st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
+            st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}") # Correct layout
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
             with col1:
                 available_options = st.session_state.get('available_items_for_dept', [""])
@@ -376,6 +317,7 @@ with tab1:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
         tooltip_message = "Please fix the issues listed above."
 
+
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
         # ... (Submission logic remains the same) ...
@@ -389,7 +331,7 @@ with tab1:
             if selected_item and qty > 0: final_items_to_submit_unsorted.append(( selected_item, qty, unit, note, category or "Uncategorized", subcategory or "General" ))
         if not final_items_to_submit_unsorted: st.error("No valid items to submit."); st.stop()
         final_items_to_submit = sorted( final_items_to_submit_unsorted, key=lambda x: (str(x[4] or ''), str(x[5] or ''), str(x[0])) )
-        requester = st.session_state.get("requested_by", "").strip();
+        requester = st.session_state.get("requested_by", "").strip()
         if not requester: st.error("Requester name cannot be empty."); st.stop()
         try:
             mrn = generate_mrn();
@@ -398,7 +340,7 @@ with tab1:
             rows_to_add = [[mrn, timestamp, requester, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note, cat, subcat in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
-                    try: log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED'); load_indent_log_data.clear(); calculate_top_items_per_dept.clear() # Clear suggestion cache too
+                    try: log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED'); load_indent_log_data.clear(); calculate_top_items_per_dept.clear()
                     except gspread.exceptions.APIError as e: st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: st.error(f"Submission error: {e}"); st.exception(e); st.stop()
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'requester': requester, 'items': final_items_to_submit}
@@ -416,7 +358,6 @@ with tab1:
         st.dataframe(submitted_df, hide_index=True, use_container_width=True, column_config={ "Category": st.column_config.TextColumn("Category"), "Sub-Category": st.column_config.TextColumn("Sub-Cat") })
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Qty:** {total_submitted_qty}"); st.divider()
-        # Buttons side-by-side
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             try: pdf_data = create_indent_pdf(submitted_data); pdf_bytes: bytes = bytes(pdf_data); st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf", use_container_width=True)
@@ -435,7 +376,7 @@ with tab1:
 with tab2:
     # ... (Tab 2 code remains the same) ...
     st.subheader("View Past Indent Requests")
-    log_df_tab2 = load_indent_log_data() # Use a different variable name to avoid conflict if log_df is used elsewhere
+    log_df_tab2 = load_indent_log_data()
     if not log_df_tab2.empty:
         st.divider()
         with st.expander("Filter Options", expanded=True):
