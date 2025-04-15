@@ -29,7 +29,7 @@ st.title("Material Indent Form")
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def connect_gsheets():
-    """Connects to Google Sheets and returns client, log sheet, and reference sheet."""
+    # ... (connection logic remains the same) ...
     try:
         if "gcp_service_account" not in st.secrets: st.error("Missing GCP credentials!"); return None, None, None
         json_creds_data: Any = st.secrets["gcp_service_account"]
@@ -52,13 +52,14 @@ def connect_gsheets():
     except gspread.exceptions.RequestError as e: st.error(f"Network error connecting to Google: {e}"); return None, None, None
     except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); return None, None, None
 
+
 client, log_sheet, reference_sheet = connect_gsheets()
 if not client or not log_sheet or not reference_sheet: st.error("Failed Sheets connection."); st.stop()
 
 # --- Reference Data Loading Function (CACHED) ---
 @st.cache_data(ttl=3600, show_spinner="Fetching item reference data...")
 def get_reference_data(_reference_sheet: Worksheet) -> Tuple[List[str], Dict[str, str]]:
-    """Fetches and processes reference data."""
+    # ... (function remains the same) ...
     try:
         all_data: List[List[str]] = _reference_sheet.get_all_values()
         item_names: List[str] = [""]
@@ -76,6 +77,7 @@ def get_reference_data(_reference_sheet: Worksheet) -> Tuple[List[str], Dict[str
     except gspread.exceptions.APIError as e: st.error(f"API Error loading reference: {e}"); return [""], {}
     except Exception as e: st.error(f"Error loading reference: {e}"); return [""], {}
 
+
 # --- Load Reference Data into State ---
 if reference_sheet: master_item_names, item_to_unit_lower = get_reference_data(reference_sheet); st.session_state['master_item_list'] = master_item_names; st.session_state['item_to_unit_lower'] = item_to_unit_lower
 else: st.session_state['master_item_list'] = [""]; st.session_state['item_to_unit_lower'] = {}
@@ -85,7 +87,7 @@ if len(master_item_names) <= 1: st.error("Item list empty/not loaded.")
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
-    """Generates the next MRN."""
+    # ... (function remains the same) ...
     if not log_sheet: return f"MRN-ERR-NOSHEET"
     try:
         all_mrns = log_sheet.col_values(1); next_number = 1
@@ -99,13 +101,14 @@ def generate_mrn() -> str:
     except gspread.exceptions.APIError as e: st.error(f"API Error generating MRN: {e}"); return f"MRN-ERR-API-{datetime.now().strftime('%H%M%S')}"
     except Exception as e: st.error(f"Error generating MRN: {e}"); return f"MRN-ERR-EXC-{datetime.now().strftime('%H%M%S')}"
 
+
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
-    """Creates a PDF document for the indent request, returns bytes."""
+    # ... (function remains the same, displays DD-MM-YY from data['date']) ...
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
-    pdf.cell(95, 7, f"MRN: {data['mrn']}", ln=0); pdf.cell(95, 7, f"Date Required: {data['date']}", ln=1, align='R') # Uses DD-MM-YY from data
+    pdf.cell(95, 7, f"MRN: {data['mrn']}", ln=0); pdf.cell(95, 7, f"Date Required: {data['date']}", ln=1, align='R')
     pdf.cell(0, 7, f"Department: {data['dept']}", ln=1); pdf.ln(7)
     pdf.set_font("Helvetica", "B", 10); pdf.set_fill_color(230, 230, 230)
     col_widths = {'item': 90, 'qty': 15, 'unit': 25, 'note': 60}
@@ -122,6 +125,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         pdf.set_y(final_y); pdf.ln(0.1)
     return pdf.output()
 
+
 # --- Function to Load Log Data (Cached) ---
 @st.cache_data(ttl=60, show_spinner="Loading indent history...")
 def load_indent_log_data() -> pd.DataFrame:
@@ -135,7 +139,7 @@ def load_indent_log_data() -> pd.DataFrame:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
         if 'Date Required' in df.columns:
-            # Parse DD-MM-YY format from Google Sheet
+            # *** MODIFIED: Parse DD-MM-YY format from Google Sheet ***
             df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%y', errors='coerce')
         if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department']:
@@ -179,15 +183,16 @@ with tab1:
         "Date Required*",
         value=st.session_state.get("selected_date", date.today()),
         min_value=date.today(),
-        # *** FIX: Revert to a supported format for input widget ***
-        format="DD-MM-YYYY",
+        # *** MODIFIED: Use YYYY-MM-DD for input widget ***
+        format="YYYY-MM-DD",
         key="selected_date",
-        help="Select the date materials are needed (DD-MM-YYYY)."
+        help="Select the date materials are needed (YYYY-MM-DD)."
     )
 
     st.divider(); st.subheader("Enter Items:")
 
     # --- Item Input Rows ---
+    # ... (Item input loop remains the same as previous working version) ...
     items_to_render = list(st.session_state.form_items) # Iterate copy
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
@@ -220,6 +225,7 @@ with tab1:
     with col2_btn: st.button("🔄 Clear All Items & Form", on_click=clear_all_items, use_container_width=True)
 
     # --- Validation ---
+    # ... (Validation logic remains the same) ...
     items_for_validation = [item['item'] for item in st.session_state.form_items if item.get('item')]
     item_counts = Counter(items_for_validation); duplicates_found = {item: count for item, count in item_counts.items() if count > 1}
     has_duplicates = bool(duplicates_found); has_valid_items = any(item.get('item') and item.get('qty', 0) > 0 for item in st.session_state.form_items)
@@ -232,6 +238,7 @@ with tab1:
     if error_messages:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
         tooltip_message = "Please fix the issues listed above."
+
 
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
@@ -247,7 +254,7 @@ with tab1:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); current_date_obj = st.session_state.get("selected_date", date.today())
-            # Store date as DD-MM-YY
+            # *** MODIFIED: Format date as DD-MM-YY for storage ***
             formatted_date = current_date_obj.strftime("%d-%m-%y")
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
@@ -290,10 +297,10 @@ with tab2:
             if min_date_log > max_date_log: min_date_log = max_date_log
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
             with filt_col1:
-                # *** FIX: Revert to supported format for input widget ***
-                filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start", format="DD-MM-YYYY")
+                # *** MODIFIED: Use YYYY-MM-DD for input widget ***
+                filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start", format="YYYY-MM-DD")
                 valid_end_min = filt_start_date;
-                filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end", format="DD-MM-YYYY")
+                filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end", format="YYYY-MM-DD")
             with filt_col2: selected_depts = st.multiselect("Department", options=dept_options, default=[], key="filt_dept"); mrn_search = st.text_input("MRN", key="filt_mrn", placeholder="e.g., MRN-005")
             with filt_col3: item_search = st.text_input("Item Name", key="filt_item", placeholder="e.g., Salt")
         filtered_df = log_df.copy()
@@ -306,7 +313,7 @@ with tab2:
         st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
             column_config={
-                # Display format remains DD-MM-YY
+                # *** MODIFIED: Use DD-MM-YY for display format ***
                 "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD-MM-YY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Qty", format="%d"),
