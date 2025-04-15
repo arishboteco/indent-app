@@ -68,10 +68,8 @@ try:
 except json.JSONDecodeError: # Catch error if json.loads fails above
     st.error("Error parsing GCP credentials JSON.")
     st.stop()
-except gspread.exceptions.RequestError as e:
-    st.error(f"Network error connecting to Google Sheets API: {e}")
-    st.stop()
-except Exception as e:
+# REMOVED: except gspread.exceptions.RequestError as e: because it doesn't exist
+except Exception as e: # Generic exception handler catches other issues like network errors
     st.error(f"An unexpected error occurred during Google Sheets setup: {e}")
     st.exception(e) # Log full traceback for debugging
     st.stop()
@@ -588,6 +586,7 @@ with tab1:
 
         # Prepare and display the DataFrame summary
         items_for_df = submitted_data.get('items', [])
+        # Check if data is in the expected format (list of tuples)
         if items_for_df and isinstance(items_for_df[0], tuple) and len(items_for_df[0]) == 4:
              submitted_df = pd.DataFrame(items_for_df, columns=["Item", "Qty", "Unit", "Note"])
              st.dataframe(submitted_df, hide_index=True, use_container_width=True)
@@ -618,7 +617,8 @@ with tab1:
         # Button to clear the summary and start a new indent form
         if st.button("Start New Indent", key='new_indent_button'):
             # Remove the summary data from state
-            del st.session_state['submitted_data_for_summary']
+            if 'submitted_data_for_summary' in st.session_state:
+                del st.session_state['submitted_data_for_summary']
             # Rerun the script to show the fresh, empty form
             st.rerun()
 
@@ -629,8 +629,7 @@ with tab2:
 
     # --- Handle Filter Reset Flag ---
     # Calculate default date range based on actual data BEFORE potential reset
-    # Load data once for date range calculation (cache helps subsequent load)
-    log_df_for_dates = load_indent_log_data()
+    log_df_for_dates = load_indent_log_data() # Load data once for date range calculation
     min_date_log = date.today() - pd.Timedelta(days=30) # Default fallback
     max_date_log = date.today() # Default fallback
     if not log_df_for_dates.empty and 'Date Required' in log_df_for_dates.columns and not log_df_for_dates['Date Required'].isnull().all():
@@ -652,7 +651,7 @@ with tab2:
         st.session_state["filt_item"] = ""
         del st.session_state['reset_filters_flag'] # Unset flag immediately
 
-    # Initialize filter state keys if they don't exist after potential reset check
+    # Initialize filter state keys if they don't exist
     st.session_state.setdefault("filt_start", min_date_log)
     st.session_state.setdefault("filt_end", max_date_log)
     st.session_state.setdefault("filt_dept", [])
