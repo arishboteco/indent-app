@@ -102,6 +102,7 @@ def generate_mrn() -> str:
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     """Creates a PDF document for the indent request, returns bytes."""
+    # This function remains unchanged from the previous version
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
@@ -128,8 +129,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         final_y = max(y1, y2, y3, y4)
         pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y)
         pdf.set_y(final_y); pdf.ln(0.1)
-    # *** FIX: Return bytes directly using output() or output(dest='tobytes') ***
-    return pdf.output()
+    return pdf.output() # Returns bytes
 
 # --- Function to Load Log Data (Cached) ---
 @st.cache_data(ttl=60, show_spinner="Loading indent history...")
@@ -163,7 +163,7 @@ with tab1:
 
     # --- Helper Functions ---
     def add_item(): st.session_state.form_items.append({'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'})
-    def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item()) # Ensure one row if list becomes empty
+    def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item())
     def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
 
     # --- Item Select Callback ---
@@ -177,7 +177,7 @@ with tab1:
     DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
     last_dept = st.session_state.get('last_dept'); dept_index = 0
     try: current_selection = st.session_state.get("selected_dept", last_dept);
-    except Exception: current_selection=None # handle edge case where selected_dept exists but isn't hashable/valid
+    except Exception: current_selection=None
     if current_selection and current_selection in DEPARTMENTS:
         try: dept_index = DEPARTMENTS.index(current_selection)
         except ValueError: dept_index = 0
@@ -190,60 +190,44 @@ with tab1:
     items_to_render = list(st.session_state.form_items) # Iterate copy
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
-        qty_key = f"qty_{item_id}"
-        note_key = f"note_{item_id}"
-        selectbox_key = f"item_select_{item_id}"
+        qty_key = f"qty_{item_id}"; note_key = f"note_{item_id}"; selectbox_key = f"item_select_{item_id}"
 
-        # *** FIX for Quantity Lag: Update dictionary based on widget state *before* rendering the label ***
+        # Update dictionary based on widget state *before* rendering label
         if qty_key in st.session_state:
-            # Check type just in case, default to 1 if invalid
             widget_qty = st.session_state[qty_key]
             st.session_state.form_items[i]['qty'] = int(widget_qty) if isinstance(widget_qty, (int, float, str)) and str(widget_qty).isdigit() else 1
-        if note_key in st.session_state:
-            st.session_state.form_items[i]['note'] = st.session_state[note_key]
+        if note_key in st.session_state: st.session_state.form_items[i]['note'] = st.session_state[note_key]
 
-        # Now read potentially updated values from the dictionary
-        current_item_value = st.session_state.form_items[i].get('item')
-        current_qty_from_dict = st.session_state.form_items[i].get('qty', 1)
-        current_note = st.session_state.form_items[i].get('note', '')
-        current_unit = st.session_state.form_items[i].get('unit', '-')
+        # Read potentially updated values from the dictionary
+        current_item_value = st.session_state.form_items[i].get('item'); current_qty_from_dict = st.session_state.form_items[i].get('qty', 1)
+        current_note = st.session_state.form_items[i].get('note', ''); current_unit = st.session_state.form_items[i].get('unit', '-')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
 
-        # Render expander using the (potentially) updated dictionary values
         with st.expander(label=f"{item_label} (Qty: {current_qty_from_dict}, Unit: {current_unit})", expanded=True):
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
-
             with col1: # Item Select
                 try: current_item_index = master_item_names.index(current_item_value) if current_item_value else 0
                 except ValueError: current_item_index = 0
-                st.selectbox( "Item Select", options=master_item_names, index=current_item_index, key=selectbox_key,
-                    placeholder="Type or select an item...", label_visibility="collapsed",
-                    on_change=update_unit_display_and_item_value, args=(item_id, selectbox_key) )
+                st.selectbox( "Item Select", options=master_item_names, index=current_item_index, key=selectbox_key, placeholder="Type or select an item...", label_visibility="collapsed", on_change=update_unit_display_and_item_value, args=(item_id, selectbox_key) )
             with col2: # Note
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
-                # Note value automatically saved to session_state[note_key] by Streamlit
             with col3: # Quantity
                 st.number_input( "Quantity", min_value=1, step=1, value=current_qty_from_dict, key=qty_key, label_visibility="collapsed" )
-                # Quantity value automatically saved to session_state[qty_key] by Streamlit
             with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
                  else: st.write("")
 
     st.divider()
-    col1_btn, col2_btn = st.columns(2) # Add/Clear Buttons
+    col1_btn, col2_btn = st.columns(2)
     with col1_btn: st.button("➕ Add Another Item", on_click=add_item, use_container_width=True)
     with col2_btn: st.button("🔄 Clear All Items & Form", on_click=clear_all_items, use_container_width=True)
 
     # --- Validation ---
     items_for_validation = [item['item'] for item in st.session_state.form_items if item.get('item')]
-    item_counts = Counter(items_for_validation)
-    duplicates_found = {item: count for item, count in item_counts.items() if count > 1}
-    has_duplicates = bool(duplicates_found)
-    has_valid_items = any(item.get('item') and item.get('qty', 0) > 0 for item in st.session_state.form_items)
-    current_dept_tab1 = st.session_state.get("selected_dept", "")
-    submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1
-    error_messages = []
-    tooltip_message = "Submit the current indent request."
+    item_counts = Counter(items_for_validation); duplicates_found = {item: count for item, count in item_counts.items() if count > 1}
+    has_duplicates = bool(duplicates_found); has_valid_items = any(item.get('item') and item.get('qty', 0) > 0 for item in st.session_state.form_items)
+    current_dept_tab1 = st.session_state.get("selected_dept", ""); submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1
+    error_messages = []; tooltip_message = "Submit the current indent request."
     if not has_valid_items: error_messages.append("Add at least one valid item with quantity > 0.")
     if has_duplicates: error_messages.append(f"Remove duplicate items: {', '.join(duplicates_found.keys())}.")
     if not current_dept_tab1: error_messages.append("Select a department.")
@@ -254,11 +238,8 @@ with tab1:
 
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        final_items_to_submit: List[Tuple[str, int, str, str]] = []
-        final_item_names = set()
-        final_has_duplicates = False
-        # *** Read final values directly from the dictionary state ***
-        for item_dict in st.session_state.form_items:
+        final_items_to_submit: List[Tuple[str, int, str, str]] = []; final_item_names = set(); final_has_duplicates = False
+        for item_dict in st.session_state.form_items: # Read final values from dict state
             selected_item = item_dict.get('item'); qty = item_dict.get('qty', 0); unit = item_dict.get('unit', 'N/A'); note = item_dict.get('note', '')
             if selected_item and qty > 0:
                 if selected_item in final_item_names: final_has_duplicates = True; st.error(f"Duplicate item '{selected_item}' found."); break
@@ -266,11 +247,9 @@ with tab1:
         if final_has_duplicates: st.stop()
         if not final_items_to_submit: st.error("No valid items to submit."); st.stop()
         try:
-            mrn = generate_mrn()
+            mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            current_date_obj = st.session_state.get("selected_date", date.today())
-            formatted_date = current_date_obj.strftime("%d-%m-%Y")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); current_date_obj = st.session_state.get("selected_date", date.today()); formatted_date = current_date_obj.strftime("%d-%m-%Y")
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
@@ -292,13 +271,18 @@ with tab1:
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Qty:** {total_submitted_qty}"); st.divider()
         try:
-            # *** Use the corrected PDF function call ***
-            pdf_output: bytes = create_indent_pdf(submitted_data)
-            st.download_button(label="📄 Download PDF", data=pdf_output, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
-        except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error}")
+            # *** FIX: Explicitly cast create_indent_pdf output to bytes ***
+            pdf_data = create_indent_pdf(submitted_data)
+            pdf_bytes: bytes = bytes(pdf_data) # Ensure it's bytes type
+            st.download_button(label="📄 Download PDF", data=pdf_bytes, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
+        except Exception as pdf_error:
+            # Print type for debugging if error persists
+            st.error(f"Could not generate PDF: {pdf_error} (Data type was: {type(pdf_data)})")
+            st.exception(pdf_error)
         if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.rerun()
 
 # --- TAB 2: View Indents ---
+# (Tab 2 code remains unchanged from the previous version)
 with tab2:
     st.subheader("View Past Indent Requests")
     log_df = load_indent_log_data()
