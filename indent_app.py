@@ -283,7 +283,6 @@ with tab1:
     if 'dept_items_map' in st.session_state and 'available_items_for_dept' not in st.session_state:
          department_changed_callback()
     elif st.session_state.get("selected_dept") and not st.session_state.get('available_items_for_dept'):
-         # If dept selected but items empty, maybe callback failed or was missed, try again
          department_changed_callback()
 
 
@@ -308,21 +307,20 @@ with tab1:
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
         is_duplicate = current_item_value and current_item_value in duplicates_found_dict
         duplicate_indicator = "⚠️ " if is_duplicate else ""
-        expander_label = f"{duplicate_indicator}**{item_label}**" # Keep label simple
+        expander_label = f"{duplicate_indicator}**{item_label}**"
 
         with st.expander(label=expander_label, expanded=True):
             if is_duplicate: st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
 
-            # *** MODIFIED: Use st.caption for Cat/SubCat ***
-            st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
-            st.divider() # Separate info from inputs
-
-            col1, col2, col3, col4 = st.columns([4, 3, 1, 1]) # Input columns
+            # Input columns
+            col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
             with col1: # Item Select
                 available_options = st.session_state.get('available_items_for_dept', [""])
                 try: current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
                 except ValueError: current_item_index = 0
-                st.selectbox( "Item Select", options=available_options, index=current_item_index, key=selectbox_key, placeholder="Select item for department...", label_visibility="collapsed", on_change=item_selected_callback, args=(item_id, selectbox_key) ) # Use combined callback
+                st.selectbox( "Item Select", options=available_options, index=current_item_index, key=selectbox_key, placeholder="Select item for department...", label_visibility="collapsed", on_change=item_selected_callback, args=(item_id, selectbox_key) )
+                # *** MODIFIED: Display Cat/SubCat below item select using caption ***
+                st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
             with col2: # Note
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
             with col3: # Quantity
@@ -332,8 +330,9 @@ with tab1:
             with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
                  else: st.write("")
+            # *** MODIFIED: Removed divider from here ***
 
-    st.divider()
+    st.divider() # Keep divider after the whole item list
 
     # --- Add Item Controls ---
     col_add1, col_add2, col_add3 = st.columns([1, 2, 2])
@@ -367,21 +366,18 @@ with tab1:
         if bool(final_duplicates_dict):
              st.error(f"Duplicate items still detected ({', '.join(final_duplicates_dict.keys())}). Please remove duplicates.")
              st.stop()
-
         for item_dict in st.session_state.form_items:
             selected_item = item_dict.get('item'); qty = item_dict.get('qty', 0); unit = item_dict.get('unit', '-'); note = item_dict.get('note', '')
             category = item_dict.get('category'); subcategory = item_dict.get('subcategory')
             if selected_item and qty > 0: final_items_to_submit_unsorted.append(( selected_item, qty, unit, note, category or "Uncategorized", subcategory or "General" ))
         if not final_items_to_submit_unsorted: st.error("No valid items to submit."); st.stop()
-
         final_items_to_submit = sorted( final_items_to_submit_unsorted, key=lambda x: (str(x[4] or ''), str(x[5] or ''), str(x[0])) )
-
         try:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S");
             date_to_format = st.session_state.get("selected_date", date.today())
-            formatted_date = date_to_format.strftime("%d-%m-%Y")
+            formatted_date = date_to_format.strftime("%d-%m-%Y") # DD-MM-YYYY storage
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note, cat, subcat in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
