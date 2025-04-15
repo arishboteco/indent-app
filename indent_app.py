@@ -27,47 +27,41 @@ st.title("Material Indent Form")
 
 # Google Sheets setup & Credentials Handling
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-@st.cache_resource(show_spinner="Connecting to Google Sheets...") # Cache the connection resources
+@st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def connect_gsheets():
     """Connects to Google Sheets and returns client, log sheet, and reference sheet."""
     try:
-        if "gcp_service_account" not in st.secrets:
-            st.error("Missing GCP credentials in st.secrets!")
-            return None, None, None
+        if "gcp_service_account" not in st.secrets: st.error("Missing GCP credentials!"); return None, None, None
         json_creds_data: Any = st.secrets["gcp_service_account"]
         if isinstance(json_creds_data, str):
             try: creds_dict: Dict[str, Any] = json.loads(json_creds_data)
             except json.JSONDecodeError: st.error("Error parsing GCP credentials string."); return None, None, None
         elif isinstance(json_creds_data, dict): creds_dict = json_creds_data
         else: st.error("GCP credentials format error."); return None, None, None
-
         creds: ServiceAccountCredentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client: Client = gspread.authorize(creds)
         try:
             indent_log_spreadsheet: Spreadsheet = client.open("Indent Log")
-            log_sheet: Worksheet = indent_log_spreadsheet.sheet1 # Log Sheet
-            reference_sheet: Worksheet = indent_log_spreadsheet.worksheet("reference") # Item Reference Sheet
+            log_sheet: Worksheet = indent_log_spreadsheet.sheet1
+            reference_sheet: Worksheet = indent_log_spreadsheet.worksheet("reference")
             return client, log_sheet, reference_sheet
         except gspread.exceptions.SpreadsheetNotFound: st.error("Spreadsheet 'Indent Log' not found."); return None, None, None
         except gspread.exceptions.WorksheetNotFound: st.error("Worksheet 'Sheet1' or 'reference' not found."); return None, None, None
-        except gspread.exceptions.APIError as e: st.error(f"Google API Error accessing sheets: {e}"); return None, None, None
+        except gspread.exceptions.APIError as e: st.error(f"Google API Error: {e}"); return None, None, None
     except json.JSONDecodeError: st.error("Error parsing GCP credentials JSON."); return None, None, None
     except gspread.exceptions.RequestError as e: st.error(f"Network error connecting to Google: {e}"); return None, None, None
     except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); return None, None, None
 
 client, log_sheet, reference_sheet = connect_gsheets()
-
-if not client or not log_sheet or not reference_sheet:
-    st.error("Failed to initialize Google Sheets connection. Cannot proceed.")
-    st.stop()
+if not client or not log_sheet or not reference_sheet: st.error("Failed Sheets connection."); st.stop()
 
 # --- Reference Data Loading Function (CACHED) ---
 @st.cache_data(ttl=3600, show_spinner="Fetching item reference data...")
 def get_reference_data(_reference_sheet: Worksheet) -> Tuple[List[str], Dict[str, str]]:
-    """Fetches and processes reference data from the 'reference' worksheet."""
+    """Fetches and processes reference data."""
     try:
         all_data: List[List[str]] = _reference_sheet.get_all_values()
-        item_names: List[str] = [""] # Start with blank option
+        item_names: List[str] = [""]
         item_to_unit_lower: Dict[str, str] = {}
         processed_items_lower: set[str] = set()
         header_skipped: bool = False
@@ -76,34 +70,25 @@ def get_reference_data(_reference_sheet: Worksheet) -> Tuple[List[str], Dict[str
             if not header_skipped and i == 0 and (("item" in str(row[0]).lower() or "name" in str(row[0]).lower()) and "unit" in str(row[1]).lower()): header_skipped = True; continue
             if len(row) >= 2:
                 item: str = str(row[0]).strip(); unit: str = str(row[1]).strip(); item_lower: str = item.lower()
-                if item and item_lower not in processed_items_lower:
-                    item_names.append(item); item_to_unit_lower[item_lower] = unit if unit else "N/A"; processed_items_lower.add(item_lower)
-        other_items = sorted([name for name in item_names if name])
-        item_names = [""] + other_items
+                if item and item_lower not in processed_items_lower: item_names.append(item); item_to_unit_lower[item_lower] = unit if unit else "N/A"; processed_items_lower.add(item_lower)
+        other_items = sorted([name for name in item_names if name]); item_names = [""] + other_items
         return item_names, item_to_unit_lower
-    except gspread.exceptions.APIError as e: st.error(f"API Error loading reference data: {e}"); return [""], {}
-    except Exception as e: st.error(f"Error loading reference data: {e}"); return [""], {}
+    except gspread.exceptions.APIError as e: st.error(f"API Error loading reference: {e}"); return [""], {}
+    except Exception as e: st.error(f"Error loading reference: {e}"); return [""], {}
 
 # --- Load Reference Data into State ---
-if reference_sheet:
-     master_item_names, item_to_unit_lower = get_reference_data(reference_sheet)
-     st.session_state['master_item_list'] = master_item_names
-     st.session_state['item_to_unit_lower'] = item_to_unit_lower
-else:
-     st.session_state['master_item_list'] = [""]; st.session_state['item_to_unit_lower'] = {}
-
+if reference_sheet: master_item_names, item_to_unit_lower = get_reference_data(reference_sheet); st.session_state['master_item_list'] = master_item_names; st.session_state['item_to_unit_lower'] = item_to_unit_lower
+else: st.session_state['master_item_list'] = [""]; st.session_state['item_to_unit_lower'] = {}
 master_item_names = st.session_state.get('master_item_list', [""])
 item_to_unit_lower = st.session_state.get('item_to_unit_lower', {})
-
-if len(master_item_names) <= 1: st.error("Item list empty/not loaded. Cannot create indents.")
+if len(master_item_names) <= 1: st.error("Item list empty/not loaded.")
 
 # --- MRN Generation ---
 def generate_mrn() -> str:
-    """Generates the next MRN based on the log sheet."""
+    """Generates the next MRN."""
     if not log_sheet: return f"MRN-ERR-NOSHEET"
     try:
-        all_mrns = log_sheet.col_values(1)
-        next_number = 1
+        all_mrns = log_sheet.col_values(1); next_number = 1
         if len(all_mrns) > 1:
             last_valid_num = 0
             for mrn_str in reversed(all_mrns):
@@ -116,6 +101,7 @@ def generate_mrn() -> str:
 
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
+    """Creates a PDF document for the indent request, returns bytes."""
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
@@ -142,18 +128,18 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         final_y = max(y1, y2, y3, y4)
         pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y)
         pdf.set_y(final_y); pdf.ln(0.1)
-    return pdf.output(dest='S').encode('latin-1')
+    # *** FIX: Return bytes directly using output() or output(dest='tobytes') ***
+    return pdf.output()
 
-# --- Function to Load and Clean Log Data (Cached) ---
+# --- Function to Load Log Data (Cached) ---
 @st.cache_data(ttl=60, show_spinner="Loading indent history...")
 def load_indent_log_data() -> pd.DataFrame:
-    """Loads and cleans data from the main indent log sheet."""
+    """Loads and cleans data from the log sheet."""
     if not log_sheet: return pd.DataFrame()
     try:
         records = log_sheet.get_all_records()
         if not records: expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']; return pd.DataFrame(columns=expected_cols)
-        df = pd.DataFrame(records)
-        expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
+        df = pd.DataFrame(records); expected_cols = ['MRN', 'Timestamp', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
         for col in expected_cols:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
@@ -162,54 +148,39 @@ def load_indent_log_data() -> pd.DataFrame:
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department']:
              if col in df.columns: df[col] = df[col].fillna('')
         return df.sort_values(by='Timestamp', ascending=False, na_position='last')
-    except gspread.exceptions.APIError as e: st.error(f"API Error loading indent log: {e}"); return pd.DataFrame()
-    except Exception as e: st.error(f"Error loading/cleaning indent log: {e}"); return pd.DataFrame()
+    except gspread.exceptions.APIError as e: st.error(f"API Error loading log: {e}"); return pd.DataFrame()
+    except Exception as e: st.error(f"Error loading/cleaning log: {e}"); return pd.DataFrame()
 
-# --- --- --- --- --- --- --- ---
-
-# --- UI divided into Tabs ---
+# --- UI Tabs ---
 tab1, tab2 = st.tabs(["📝 New Indent", "📊 View Indents"])
 
 # --- TAB 1: New Indent Form ---
 with tab1:
-    # --- Session State Initialization ---
-    if "form_items" not in st.session_state:
-        st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
+    # --- Session State Init ---
+    if "form_items" not in st.session_state: st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
     if 'last_dept' not in st.session_state: st.session_state.last_dept = None
     if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
 
     # --- Helper Functions ---
-    def add_item():
-        new_id = f"item_{time.time_ns()}"
-        st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1, 'note': '', 'unit': '-'})
+    def add_item(): st.session_state.form_items.append({'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'})
+    def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item()) # Ensure one row if list becomes empty
+    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
 
-    def remove_item(item_id_to_remove):
-        st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id_to_remove]
-        if not st.session_state.form_items: add_item()
-
-    def clear_all_items():
-        st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
-        # Keep dept/date selected by default
-
-    # --- Callback for Item Selection ---
+    # --- Item Select Callback ---
     def update_unit_display_and_item_value(item_id, selectbox_key):
-        selected_item_name = st.session_state[selectbox_key]
-        unit = "-"
+        selected_item_name = st.session_state[selectbox_key]; unit = "-";
         if selected_item_name: unit = item_to_unit_lower.get(selected_item_name.lower(), "N/A"); unit = unit if unit else "-"
         for i, item_dict in enumerate(st.session_state.form_items):
-            if item_dict['id'] == item_id:
-                st.session_state.form_items[i]['item'] = selected_item_name if selected_item_name else None
-                st.session_state.form_items[i]['unit'] = unit
-                break
+            if item_dict['id'] == item_id: st.session_state.form_items[i]['item'] = selected_item_name if selected_item_name else None; st.session_state.form_items[i]['unit'] = unit; break
 
     # --- Header Inputs ---
     DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
-    last_dept = st.session_state.get('last_dept')
-    dept_index = 0
-    try:
-        current_selection = st.session_state.get("selected_dept", last_dept)
-        if current_selection and current_selection in DEPARTMENTS: dept_index = DEPARTMENTS.index(current_selection)
-    except ValueError: dept_index = 0
+    last_dept = st.session_state.get('last_dept'); dept_index = 0
+    try: current_selection = st.session_state.get("selected_dept", last_dept);
+    except Exception: current_selection=None # handle edge case where selected_dept exists but isn't hashable/valid
+    if current_selection and current_selection in DEPARTMENTS:
+        try: dept_index = DEPARTMENTS.index(current_selection)
+        except ValueError: dept_index = 0
     dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select the requesting department.")
     delivery_date = st.date_input( "Date Required*", value=st.session_state.get("selected_date", date.today()), min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed.")
 
@@ -219,19 +190,28 @@ with tab1:
     items_to_render = list(st.session_state.form_items) # Iterate copy
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
-        current_item_value = item_dict.get('item')
-        # *** Read quantity directly from the dictionary for default value ***
-        current_qty_from_dict = item_dict.get('qty', 1)
-        current_note = item_dict.get('note', '')
-        current_unit = item_dict.get('unit', '-')
+        qty_key = f"qty_{item_id}"
+        note_key = f"note_{item_id}"
+        selectbox_key = f"item_select_{item_id}"
 
+        # *** FIX for Quantity Lag: Update dictionary based on widget state *before* rendering the label ***
+        if qty_key in st.session_state:
+            # Check type just in case, default to 1 if invalid
+            widget_qty = st.session_state[qty_key]
+            st.session_state.form_items[i]['qty'] = int(widget_qty) if isinstance(widget_qty, (int, float, str)) and str(widget_qty).isdigit() else 1
+        if note_key in st.session_state:
+            st.session_state.form_items[i]['note'] = st.session_state[note_key]
+
+        # Now read potentially updated values from the dictionary
+        current_item_value = st.session_state.form_items[i].get('item')
+        current_qty_from_dict = st.session_state.form_items[i].get('qty', 1)
+        current_note = st.session_state.form_items[i].get('note', '')
+        current_unit = st.session_state.form_items[i].get('unit', '-')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
 
-        with st.expander(label=f"{item_label} (Qty: {current_qty_from_dict}, Unit: {current_unit})", expanded=True): # Show dict qty in label
+        # Render expander using the (potentially) updated dictionary values
+        with st.expander(label=f"{item_label} (Qty: {current_qty_from_dict}, Unit: {current_unit})", expanded=True):
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
-            selectbox_key = f"item_select_{item_id}"
-            note_key = f"note_{item_id}"
-            qty_key = f"qty_{item_id}" # Define qty key here
 
             with col1: # Item Select
                 try: current_item_index = master_item_names.index(current_item_value) if current_item_value else 0
@@ -239,59 +219,45 @@ with tab1:
                 st.selectbox( "Item Select", options=master_item_names, index=current_item_index, key=selectbox_key,
                     placeholder="Type or select an item...", label_visibility="collapsed",
                     on_change=update_unit_display_and_item_value, args=(item_id, selectbox_key) )
-
             with col2: # Note
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
-                # Update dict from widget state *after* rendering
-                st.session_state.form_items[i]['note'] = st.session_state[note_key]
-
+                # Note value automatically saved to session_state[note_key] by Streamlit
             with col3: # Quantity
-                # *** Use current_qty_from_dict for the value parameter ***
-                user_entered_qty = st.number_input( "Quantity", min_value=1, step=1,
-                    value=current_qty_from_dict, # Set widget value from dict
-                    key=qty_key, label_visibility="collapsed" )
-                # *** Update the dictionary with the value returned by number_input ***
-                # This captures the user's latest input after potential interaction
-                st.session_state.form_items[i]['qty'] = user_entered_qty
-
+                st.number_input( "Quantity", min_value=1, step=1, value=current_qty_from_dict, key=qty_key, label_visibility="collapsed" )
+                # Quantity value automatically saved to session_state[qty_key] by Streamlit
             with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
-                 else: st.write("") # Placeholder
+                 else: st.write("")
 
     st.divider()
-
-    # --- Add/Clear Buttons ---
-    col1_btn, col2_btn = st.columns(2)
+    col1_btn, col2_btn = st.columns(2) # Add/Clear Buttons
     with col1_btn: st.button("➕ Add Another Item", on_click=add_item, use_container_width=True)
     with col2_btn: st.button("🔄 Clear All Items & Form", on_click=clear_all_items, use_container_width=True)
 
-    # --- Validation Checks ---
+    # --- Validation ---
     items_for_validation = [item['item'] for item in st.session_state.form_items if item.get('item')]
     item_counts = Counter(items_for_validation)
     duplicates_found = {item: count for item, count in item_counts.items() if count > 1}
     has_duplicates = bool(duplicates_found)
     has_valid_items = any(item.get('item') and item.get('qty', 0) > 0 for item in st.session_state.form_items)
     current_dept_tab1 = st.session_state.get("selected_dept", "")
-
     submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1
     error_messages = []
     tooltip_message = "Submit the current indent request."
-
     if not has_valid_items: error_messages.append("Add at least one valid item with quantity > 0.")
     if has_duplicates: error_messages.append(f"Remove duplicate items: {', '.join(duplicates_found.keys())}.")
     if not current_dept_tab1: error_messages.append("Select a department.")
-
     st.divider()
     if error_messages:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
         tooltip_message = "Please fix the issues listed above."
 
-    # --- Final Submission Button ---
+    # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        # Final Validation
         final_items_to_submit: List[Tuple[str, int, str, str]] = []
         final_item_names = set()
         final_has_duplicates = False
+        # *** Read final values directly from the dictionary state ***
         for item_dict in st.session_state.form_items:
             selected_item = item_dict.get('item'); qty = item_dict.get('qty', 0); unit = item_dict.get('unit', 'N/A'); note = item_dict.get('note', '')
             if selected_item and qty > 0:
@@ -299,10 +265,9 @@ with tab1:
                 final_item_names.add(selected_item); final_items_to_submit.append((selected_item, qty, unit, note))
         if final_has_duplicates: st.stop()
         if not final_items_to_submit: st.error("No valid items to submit."); st.stop()
-        # Submission
         try:
             mrn = generate_mrn()
-            if "ERR" in mrn: st.error(f"Failed to generate MRN ({mrn})."); st.stop()
+            if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             current_date_obj = st.session_state.get("selected_date", date.today())
             formatted_date = current_date_obj.strftime("%d-%m-%Y")
@@ -310,14 +275,13 @@ with tab1:
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
                     try: log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED'); load_indent_log_data.clear()
-                    except gspread.exceptions.APIError as api_error: st.error(f"API Error submitting: {api_error}."); st.stop()
-                    except Exception as submit_e: st.error(f"Submission error: {submit_e}"); st.exception(submit_e); st.stop()
+                    except gspread.exceptions.APIError as e: st.error(f"API Error: {e}."); st.stop()
+                    except Exception as e: st.error(f"Submission error: {e}"); st.exception(e); st.stop()
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit}
-                st.session_state['last_dept'] = current_dept_tab1; clear_all_items()
-                st.rerun()
-        except Exception as e: st.error(f"Error during submission: {e}"); st.exception(e)
+                st.session_state['last_dept'] = current_dept_tab1; clear_all_items(); st.rerun()
+        except Exception as e: st.error(f"Submission error: {e}"); st.exception(e)
 
-    # --- Display Post-Submission Summary ---
+    # --- Post-Submission Summary ---
     if st.session_state.get('submitted_data_for_summary'):
         submitted_data = st.session_state['submitted_data_for_summary']
         st.success(f"Indent submitted! MRN: {submitted_data['mrn']}")
@@ -328,6 +292,7 @@ with tab1:
         total_submitted_qty = sum(item[1] for item in submitted_data['items'])
         st.markdown(f"**Total Submitted Qty:** {total_submitted_qty}"); st.divider()
         try:
+            # *** Use the corrected PDF function call ***
             pdf_output: bytes = create_indent_pdf(submitted_data)
             st.download_button(label="📄 Download PDF", data=pdf_output, file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf")
         except Exception as pdf_error: st.error(f"Could not generate PDF: {pdf_error}")
@@ -336,7 +301,7 @@ with tab1:
 # --- TAB 2: View Indents ---
 with tab2:
     st.subheader("View Past Indent Requests")
-    log_df = load_indent_log_data() # Spinner handled by cache decorator
+    log_df = load_indent_log_data()
     if not log_df.empty:
         st.divider()
         with st.expander("Filter Options", expanded=True):
@@ -347,32 +312,19 @@ with tab2:
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
             with filt_col1:
                 filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start")
-                valid_end_min = filt_start_date
-                filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end")
-            with filt_col2:
-                selected_depts = st.multiselect("Filter by Department", options=dept_options, default=[], key="filt_dept")
-                mrn_search = st.text_input("Search by MRN", key="filt_mrn", placeholder="e.g., MRN-005")
-            with filt_col3: item_search = st.text_input("Search by Item Name", key="filt_item", placeholder="e.g., Salt")
-        # Apply Filters
+                valid_end_min = filt_start_date; filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end")
+            with filt_col2: selected_depts = st.multiselect("Department", options=dept_options, default=[], key="filt_dept"); mrn_search = st.text_input("MRN", key="filt_mrn", placeholder="e.g., MRN-005")
+            with filt_col3: item_search = st.text_input("Item Name", key="filt_item", placeholder="e.g., Salt")
         filtered_df = log_df.copy()
-        try:
-            if 'Date Required' in filtered_df.columns:
-                 start_ts = pd.Timestamp(filt_start_date); end_ts = pd.Timestamp(filt_end_date)
-                 date_filt_cond = (filtered_df['Date Required'].notna() & (filtered_df['Date Required'].dt.normalize() >= start_ts) & (filtered_df['Date Required'].dt.normalize() <= end_ts))
-                 filtered_df = filtered_df[date_filt_cond]
+        try: # Apply Filters
+            if 'Date Required' in filtered_df.columns: start_ts = pd.Timestamp(filt_start_date); end_ts = pd.Timestamp(filt_end_date); date_filt_cond = (filtered_df['Date Required'].notna() & (filtered_df['Date Required'].dt.normalize() >= start_ts) & (filtered_df['Date Required'].dt.normalize() <= end_ts)); filtered_df = filtered_df[date_filt_cond]
             if selected_depts and 'Department' in filtered_df.columns: filtered_df = filtered_df[filtered_df['Department'].isin(selected_depts)]
             if mrn_search and 'MRN' in filtered_df.columns: filtered_df = filtered_df[filtered_df['MRN'].astype(str).str.contains(mrn_search, case=False, na=False)]
             if item_search and 'Item' in filtered_df.columns: filtered_df = filtered_df[filtered_df['Item'].astype(str).str.contains(item_search, case=False, na=False)]
-        except Exception as filter_e: st.error(f"Error applying filters: {filter_e}"); filtered_df = log_df.copy()
-        # Display
-        st.divider(); st.write(f"Displaying {len(filtered_df)} matching records:")
+        except Exception as filter_e: st.error(f"Filter error: {filter_e}"); filtered_df = log_df.copy()
+        st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
-            column_config={
-                "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD-MM-YYYY"), "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
-                "Qty": st.column_config.NumberColumn("Qty", format="%d"), "MRN": st.column_config.TextColumn("MRN"), "Department": st.column_config.TextColumn("Dept."),
-                "Item": st.column_config.TextColumn("Item Name", width="medium"), "Unit": st.column_config.TextColumn("Unit"), "Note": st.column_config.TextColumn("Notes", width="large"),
-            } )
-    else: st.info("No indent records found or log is currently unavailable.")
-
+            column_config={ "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD-MM-YYYY"), "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"), "Qty": st.column_config.NumberColumn("Qty", format="%d"), "MRN": st.column_config.TextColumn("MRN"), "Department": st.column_config.TextColumn("Dept."), "Item": st.column_config.TextColumn("Item Name", width="medium"), "Unit": st.column_config.TextColumn("Unit"), "Note": st.column_config.TextColumn("Notes", width="large"), } )
+    else: st.info("No indent records found or log is unavailable.")
 # --- Optional Debug ---
 # with st.sidebar.expander("Session State Debug"): st.json(st.session_state.to_dict())
