@@ -52,7 +52,6 @@ def connect_gsheets():
     except gspread.exceptions.RequestError as e: st.error(f"Network error connecting to Google: {e}"); return None, None, None
     except Exception as e: st.error(f"Google Sheets setup error: {e}"); st.exception(e); return None, None, None
 
-
 client, log_sheet, reference_sheet = connect_gsheets()
 if not client or not log_sheet or not reference_sheet: st.error("Failed Sheets connection."); st.stop()
 
@@ -104,7 +103,7 @@ def generate_mrn() -> str:
 
 # --- PDF Generation Function ---
 def create_indent_pdf(data: Dict[str, Any]) -> bytes:
-    # ... (function remains the same, displays DD-MM-YY from data['date']) ...
+    # ... (function remains the same) ...
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
@@ -139,7 +138,7 @@ def load_indent_log_data() -> pd.DataFrame:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
         if 'Date Required' in df.columns:
-            # *** MODIFIED: Parse DD-MM-YY format from Google Sheet ***
+            # Parse DD-MM-YY format from Google Sheet
             df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%y', errors='coerce')
         if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department']:
@@ -183,7 +182,7 @@ with tab1:
         "Date Required*",
         value=st.session_state.get("selected_date", date.today()),
         min_value=date.today(),
-        # *** MODIFIED: Use YYYY-MM-DD for input widget ***
+        # Use supported YYYY-MM-DD for input widget
         format="YYYY-MM-DD",
         key="selected_date",
         help="Select the date materials are needed (YYYY-MM-DD)."
@@ -254,7 +253,7 @@ with tab1:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); current_date_obj = st.session_state.get("selected_date", date.today())
-            # *** MODIFIED: Format date as DD-MM-YY for storage ***
+            # Store date as DD-MM-YY
             formatted_date = current_date_obj.strftime("%d-%m-%y")
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
@@ -292,14 +291,28 @@ with tab2:
         st.divider()
         with st.expander("Filter Options", expanded=True):
             dept_options = sorted([d for d in log_df['Department'].unique() if d])
-            min_date_log = (log_df['Date Required'].dropna().min() if pd.notna(log_df['Date Required'].dropna().min()) else date.today() - pd.Timedelta(days=30)).date()
-            max_date_log = (log_df['Date Required'].dropna().max() if pd.notna(log_df['Date Required'].dropna().max()) else date.today()).date()
-            if min_date_log > max_date_log: min_date_log = max_date_log
+
+            # *** FIX: Correct min/max date calculation ***
+            min_ts = log_df['Date Required'].dropna().min()
+            max_ts = log_df['Date Required'].dropna().max()
+
+            # Default to today or 30 days ago if no valid dates found
+            default_start = date.today() - pd.Timedelta(days=30)
+            default_end = date.today()
+
+            # Get date part, handling potential NaT (Not a Time) result from min/max
+            min_date_log = min_ts.date() if pd.notna(min_ts) else default_start
+            max_date_log = max_ts.date() if pd.notna(max_ts) else default_end
+
+            # Ensure min_date is not after max_date
+            if min_date_log > max_date_log:
+                 min_date_log = max_date_log # Or adjust both to defaults if needed
+
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
             with filt_col1:
-                # *** MODIFIED: Use YYYY-MM-DD for input widget ***
+                # Use supported YYYY-MM-DD format for input widget
                 filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start", format="YYYY-MM-DD")
-                valid_end_min = filt_start_date;
+                valid_end_min = filt_start_date; # End date cannot be before start date
                 filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end", format="YYYY-MM-DD")
             with filt_col2: selected_depts = st.multiselect("Department", options=dept_options, default=[], key="filt_dept"); mrn_search = st.text_input("MRN", key="filt_mrn", placeholder="e.g., MRN-005")
             with filt_col3: item_search = st.text_input("Item Name", key="filt_item", placeholder="e.g., Salt")
@@ -313,7 +326,7 @@ with tab2:
         st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
             column_config={
-                # *** MODIFIED: Use DD-MM-YY for display format ***
+                # Use DD-MM-YY for display format
                 "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD-MM-YY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Qty", format="%d"),
