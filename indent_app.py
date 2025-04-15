@@ -154,30 +154,22 @@ with tab1:
     if "form_items" not in st.session_state: st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
     if 'last_dept' not in st.session_state: st.session_state.last_dept = None
     if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
-    # Initialize state for the number input to add items
     if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
 
-
     # --- Helper Functions ---
-    # *** MODIFIED: add_item now accepts a count ***
     def add_item(count=1):
-        """Adds the specified number of blank item rows."""
-        if not isinstance(count, int) or count < 1:
-            count = 1 # Default to adding 1 if input is invalid
+        if not isinstance(count, int) or count < 1: count = 1
         for _ in range(count):
             new_id = f"item_{time.time_ns()}"
             st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1, 'note': '', 'unit': '-'})
 
-    def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1)) # Ensure one row if list becomes empty
-    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}]
+    def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1))
+    def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-'}] ; st.session_state.num_items_to_add = 1 # Also reset num input on clear
 
-    # *** NEW: Callback for the Add Rows button ***
     def handle_add_items_click():
         num_to_add = st.session_state.get('num_items_to_add', 1)
         add_item(count=num_to_add)
-        # Optional: Reset the number input back to 1 after adding
-        st.session_state.num_items_to_add = 1
-
+        st.session_state.num_items_to_add = 1 # Reset after adding
 
     # --- Item Select Callback ---
     def update_unit_display_and_item_value(item_id, selectbox_key):
@@ -242,26 +234,14 @@ with tab1:
 
     st.divider()
 
-    # --- MODIFIED: Add Item Controls ---
-    col_add1, col_add2, col_add3 = st.columns([1, 2, 2]) # Adjust ratios as needed
+    # --- Add Item Controls ---
+    col_add1, col_add2, col_add3 = st.columns([1, 2, 2])
     with col_add1:
-        st.number_input(
-            "Add:", # Compact label
-            min_value=1,
-            step=1,
-            key='num_items_to_add', # Use this key in the callback
-            label_visibility="collapsed", # Hide label, use placeholder/button text
-            value=st.session_state.num_items_to_add # Set value from state
-        )
+        st.number_input( "Add:", min_value=1, step=1, key='num_items_to_add', label_visibility="collapsed", value=st.session_state.num_items_to_add )
     with col_add2:
-        st.button(
-            "➕ Add Rows",
-            on_click=handle_add_items_click, # Use the new callback
-            use_container_width=True
-        )
+        st.button( "➕ Add Rows", on_click=handle_add_items_click, use_container_width=True )
     with col_add3:
          st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True)
-
 
     # --- Validation ---
     # ... (Validation logic remains the same) ...
@@ -281,7 +261,6 @@ with tab1:
 
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        # ... (Submission logic remains the same) ...
         final_items_to_submit: List[Tuple[str, int, str, str]] = []; final_item_names = set();
         final_check_items = [item['item'] for item in st.session_state.form_items if item.get('item')]
         final_check_counts = Counter(final_check_items)
@@ -308,7 +287,7 @@ with tab1:
                 st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_tab1, 'date': formatted_date, 'items': final_items_to_submit}
                 st.session_state['last_dept'] = current_dept_tab1;
                 clear_all_items();
-                st.session_state.num_items_to_add = 1 # Reset number input state after submission
+                # *** Line removed: st.session_state.num_items_to_add = 1 ***
                 st.rerun()
         except Exception as e: st.error(f"Submission error: {e}"); st.exception(e)
 
@@ -364,6 +343,7 @@ with tab2:
         st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
             column_config={
+                 # Using DD/MM/YYYY display format based on stable code
                 "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD/MM/YYYY"),
                 "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
                 "Qty": st.column_config.NumberColumn("Qty", format="%d"),
