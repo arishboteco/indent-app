@@ -105,6 +105,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     pdf = FPDF(); pdf.add_page(); pdf.set_margins(10, 10, 10); pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("Helvetica", "B", 16); pdf.cell(0, 10, "Material Indent Request", ln=True, align='C'); pdf.ln(10)
     pdf.set_font("Helvetica", "", 12)
+    # Use the date string as passed in data (already formatted DD-MM-YY)
     pdf.cell(95, 7, f"MRN: {data['mrn']}", ln=0); pdf.cell(95, 7, f"Date Required: {data['date']}", ln=1, align='R')
     pdf.cell(0, 7, f"Department: {data['dept']}", ln=1); pdf.ln(7)
     pdf.set_font("Helvetica", "B", 10); pdf.set_fill_color(230, 230, 230)
@@ -128,7 +129,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         final_y = max(y1, y2, y3, y4)
         pdf.line(pdf.l_margin, final_y, pdf.l_margin + sum(col_widths.values()), final_y)
         pdf.set_y(final_y); pdf.ln(0.1)
-    return pdf.output() # Returns bytes
+    return pdf.output()
 
 # --- Function to Load Log Data (Cached) ---
 @st.cache_data(ttl=60, show_spinner="Loading indent history...")
@@ -142,7 +143,9 @@ def load_indent_log_data() -> pd.DataFrame:
         for col in expected_cols:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
-        if 'Date Required' in df.columns: df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
+        if 'Date Required' in df.columns:
+            # *** FIX: Parse DD-MM-YY format from Google Sheet ***
+            df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%y', errors='coerce')
         if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0).astype(int)
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department']:
              if col in df.columns: df[col] = df[col].fillna('')
@@ -181,7 +184,15 @@ with tab1:
         try: dept_index = DEPARTMENTS.index(current_selection)
         except ValueError: dept_index = 0
     dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select the requesting department.")
-    delivery_date = st.date_input( "Date Required*", value=st.session_state.get("selected_date", date.today()), min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed.")
+    delivery_date = st.date_input(
+        "Date Required*",
+        value=st.session_state.get("selected_date", date.today()),
+        min_value=date.today(),
+        # *** FIX: Set input format to DD-MM-YY ***
+        format="DD-MM-YY",
+        key="selected_date",
+        help="Select the date materials are needed."
+    )
 
     st.divider(); st.subheader("Enter Items:")
 
@@ -190,21 +201,14 @@ with tab1:
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
         qty_key = f"qty_{item_id}"; note_key = f"note_{item_id}"; selectbox_key = f"item_select_{item_id}"
-
-        # Update dictionary based on widget state before rendering label
         if qty_key in st.session_state:
             widget_qty = st.session_state[qty_key]
             st.session_state.form_items[i]['qty'] = int(widget_qty) if isinstance(widget_qty, (int, float, str)) and str(widget_qty).isdigit() else 1
         if note_key in st.session_state: st.session_state.form_items[i]['note'] = st.session_state[note_key]
-
-        # Read potentially updated values from the dictionary
         current_item_value = st.session_state.form_items[i].get('item'); current_qty_from_dict = st.session_state.form_items[i].get('qty', 1)
         current_note = st.session_state.form_items[i].get('note', ''); current_unit = st.session_state.form_items[i].get('unit', '-')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
-
-        # *** FIX: Make item label bold in expander ***
         expander_label = f"**{item_label}** (Qty: {current_qty_from_dict}, Unit: {current_unit})"
-
         with st.expander(label=expander_label, expanded=True):
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
             with col1: # Item Select
@@ -217,7 +221,7 @@ with tab1:
                 st.number_input( "Quantity", min_value=1, step=1, value=current_qty_from_dict, key=qty_key, label_visibility="collapsed" )
             with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
-                 else: st.write("") # Placeholder
+                 else: st.write("")
 
     st.divider()
     col1_btn, col2_btn = st.columns(2)
@@ -241,7 +245,7 @@ with tab1:
     # --- Submission ---
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
         final_items_to_submit: List[Tuple[str, int, str, str]] = []; final_item_names = set(); final_has_duplicates = False
-        for item_dict in st.session_state.form_items: # Read final values from dict state
+        for item_dict in st.session_state.form_items:
             selected_item = item_dict.get('item'); qty = item_dict.get('qty', 0); unit = item_dict.get('unit', 'N/A'); note = item_dict.get('note', '')
             if selected_item and qty > 0:
                 if selected_item in final_item_names: final_has_duplicates = True; st.error(f"Duplicate item '{selected_item}' found."); break
@@ -251,7 +255,9 @@ with tab1:
         try:
             mrn = generate_mrn();
             if "ERR" in mrn: st.error(f"Failed MRN ({mrn})."); st.stop()
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); current_date_obj = st.session_state.get("selected_date", date.today()); formatted_date = current_date_obj.strftime("%d-%m-%Y")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); current_date_obj = st.session_state.get("selected_date", date.today())
+            # *** FIX: Format date as DD-MM-YY for storage ***
+            formatted_date = current_date_obj.strftime("%d-%m-%y")
             rows_to_add = [[mrn, timestamp, current_dept_tab1, formatted_date, item, str(qty), unit, note if note else "N/A"] for item, qty, unit, note in final_items_to_submit]
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
@@ -267,6 +273,7 @@ with tab1:
         submitted_data = st.session_state['submitted_data_for_summary']
         st.success(f"Indent submitted! MRN: {submitted_data['mrn']}")
         st.balloons(); st.divider(); st.subheader("Submitted Indent Summary")
+        # Display uses the formatted_date (DD-MM-YY) stored in submitted_data
         st.info(f"**MRN:** {submitted_data['mrn']} | **Dept:** {submitted_data['dept']} | **Reqd Date:** {submitted_data['date']}")
         submitted_df = pd.DataFrame(submitted_data['items'], columns=["Item", "Qty", "Unit", "Note"])
         st.dataframe(submitted_df, hide_index=True, use_container_width=True)
@@ -287,13 +294,16 @@ with tab2:
         st.divider()
         with st.expander("Filter Options", expanded=True):
             dept_options = sorted([d for d in log_df['Department'].unique() if d])
+            # Date range calculation remains the same, based on parsed datetime objects
             min_date_log = (log_df['Date Required'].dropna().min() if pd.notna(log_df['Date Required'].dropna().min()) else date.today() - pd.Timedelta(days=30)).date()
             max_date_log = (log_df['Date Required'].dropna().max() if pd.notna(log_df['Date Required'].dropna().max()) else date.today()).date()
             if min_date_log > max_date_log: min_date_log = max_date_log
             filt_col1, filt_col2, filt_col3 = st.columns([1, 1, 2])
             with filt_col1:
-                filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start")
-                valid_end_min = filt_start_date; filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end")
+                # *** FIX: Set filter input format to DD-MM-YY ***
+                filt_start_date = st.date_input("Reqd. From", value=min_date_log, min_value=min_date_log, max_value=max_date_log, key="filt_start", format="DD-MM-YY")
+                valid_end_min = filt_start_date;
+                filt_end_date = st.date_input("Reqd. To", value=max_date_log, min_value=valid_end_min, max_value=max_date_log, key="filt_end", format="DD-MM-YY")
             with filt_col2: selected_depts = st.multiselect("Department", options=dept_options, default=[], key="filt_dept"); mrn_search = st.text_input("MRN", key="filt_mrn", placeholder="e.g., MRN-005")
             with filt_col3: item_search = st.text_input("Item Name", key="filt_item", placeholder="e.g., Salt")
         filtered_df = log_df.copy()
@@ -305,7 +315,17 @@ with tab2:
         except Exception as filter_e: st.error(f"Filter error: {filter_e}"); filtered_df = log_df.copy()
         st.divider(); st.write(f"Displaying {len(filtered_df)} records:")
         st.dataframe( filtered_df, use_container_width=True, hide_index=True,
-            column_config={ "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD-MM-YYYY"), "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"), "Qty": st.column_config.NumberColumn("Qty", format="%d"), "MRN": st.column_config.TextColumn("MRN"), "Department": st.column_config.TextColumn("Dept."), "Item": st.column_config.TextColumn("Item Name", width="medium"), "Unit": st.column_config.TextColumn("Unit"), "Note": st.column_config.TextColumn("Notes", width="large"), } )
+            column_config={
+                # *** FIX: Set DataFrame display format to DD-MM-YY ***
+                "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD-MM-YY"),
+                "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
+                "Qty": st.column_config.NumberColumn("Qty", format="%d"),
+                "MRN": st.column_config.TextColumn("MRN"),
+                "Department": st.column_config.TextColumn("Dept."),
+                "Item": st.column_config.TextColumn("Item Name", width="medium"),
+                "Unit": st.column_config.TextColumn("Unit"),
+                "Note": st.column_config.TextColumn("Notes", width="large"),
+             } )
     else: st.info("No indent records found or log is unavailable.")
 # --- Optional Debug ---
 # with st.sidebar.expander("Session State Debug"): st.json(st.session_state.to_dict())
