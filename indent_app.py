@@ -201,7 +201,7 @@ with tab1:
     def remove_item(item_id): st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]; ("" if st.session_state.form_items else add_item(count=1))
     def clear_all_items(): st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}] # Doesn't clear requester
     def handle_add_items_click(): num_to_add = st.session_state.get('num_items_to_add', 1); add_item(count=num_to_add)
-    def add_suggested_item(item_name_to_add): # Adds suggested item with details
+    def add_suggested_item(item_name_to_add):
         if item_name_to_add:
             current_items = [item_dict.get('item') for item_dict in st.session_state.form_items]
             if item_name_to_add in current_items: st.toast(f"'{item_name_to_add}' is already in the list.", icon="ℹ️"); return
@@ -279,22 +279,29 @@ with tab1:
         current_category = st.session_state.form_items[i].get('category'); current_subcategory = st.session_state.form_items[i].get('subcategory')
         item_label = current_item_value if current_item_value else f"Item #{i+1}"; is_duplicate = current_item_value and current_item_value in duplicates_found_dict
         duplicate_indicator = "⚠️ " if is_duplicate else ""; expander_label = f"{duplicate_indicator}**{item_label}**"
+
         with st.expander(label=expander_label, expanded=True):
             if is_duplicate: st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
-            st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}") # Correct layout
-            col1, col2, col3, col4 = st.columns([4, 3, 1, 1])
-            with col1:
+
+            # *** MODIFIED Layout: Caption moved under selectbox, divider removed ***
+            col1, col2, col3, col4 = st.columns([4, 3, 1, 1]) # Input columns
+            with col1: # Item Select & Cat/SubCat Info
                 available_options = st.session_state.get('available_items_for_dept', [""])
                 try: current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
                 except ValueError: current_item_index = 0
                 st.selectbox( "Item Select", options=available_options, index=current_item_index, key=selectbox_key, placeholder="Select item for department...", label_visibility="collapsed", on_change=item_selected_callback, args=(item_id, selectbox_key) )
-            with col2: st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
-            with col3: st.number_input( "Quantity", min_value=1, step=1, value=current_qty, key=qty_key, label_visibility="collapsed" ); st.caption(f"Unit: {current_unit or '-'}")
-            with col4:
+                # Display Cat/SubCat below item select using caption
+                st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
+            with col2: # Note
+                st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
+            with col3: # Quantity & Unit
+                st.number_input( "Quantity", min_value=1, step=1, value=current_qty, key=qty_key, label_visibility="collapsed" )
+                st.caption(f"Unit: {current_unit or '-'}") # Unit below Qty
+            with col4: # Remove Button
                  if len(st.session_state.form_items) > 1: st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
                  else: st.write("")
 
-    st.divider()
+    st.divider() # Divider after the whole item list
 
     # --- Add Item Controls ---
     col_add1, col_add2, col_add3 = st.columns([1, 2, 2])
@@ -370,7 +377,7 @@ with tab1:
             except Exception as wa_e: st.error(f"Could not create WhatsApp link: {wa_e}")
         st.caption("NOTE: To share on WhatsApp, first Download PDF, then click Prepare WhatsApp Message, choose contact/group, and MANUALLY attach the downloaded PDF before sending.")
         st.divider()
-        if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.rerun()
+        if st.button("Start New Indent"): st.session_state['submitted_data_for_summary'] = None; st.rerun() # Doesn't reset requested_by or num_items_to_add
 
 # --- TAB 2: View Indents ---
 with tab2:
