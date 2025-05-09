@@ -909,6 +909,3 @@ with tab2:
 # --- Optional Debug Section (Uncomment to view session state in sidebar) ---
 # with st.sidebar.expander("Session State Debug"):
 #    st.json(st.session_state.to_dict())
-```
-
-This code should now correctly handle decimal quantities and the `calculate_top_items_per_dept` function. Remember to test it thoroughly with your Google Sheets set
