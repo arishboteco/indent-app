@@ -25,6 +25,7 @@ TOP_N_SUGGESTIONS = 7
 
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def connect_gsheets():
+    # Function to connect to Google Sheets and return client, log_sheet, and reference_sheet objects
     try:
         if "gcp_service_account" not in st.secrets: 
             st.error("Missing GCP credentials!")
@@ -317,11 +318,13 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         pdf.set_y(final_y)
         pdf.ln(0.1)
     
-    # FIX for PDF output: fpdf2's output(dest='S') returns bytes.
-    pdf_output_data = pdf.output(dest='S')
-    if isinstance(pdf_output_data, str): # Should not be needed if fpdf2 is used
+    # FIX for PDF output: Ensure it returns bytes
+    pdf_output_data = pdf.output(dest='S') # For fpdf2, dest='S' returns bytes
+    if isinstance(pdf_output_data, bytearray):
+        return bytes(pdf_output_data) # Convert bytearray to bytes
+    elif isinstance(pdf_output_data, str): # Fallback for older fpdf
         return pdf_output_data.encode('latin-1')
-    return pdf_output_data # Return bytes directly
+    return pdf_output_data # Assume it's already bytes
 
 
 # --- UI Tabs ---
