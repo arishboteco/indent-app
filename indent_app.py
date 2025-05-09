@@ -226,10 +226,11 @@ def calculate_top_items_per_dept_smarter(log_df: pd.DataFrame, top_n: int = 7, d
         return top_items.to_dict()
     except Exception as e:
         st.warning(f"Could not calculate smarter top items: {e}")
-        return calculate_top_items_per_dept(log_df, top_n) 
+        return calculate_top_items_per_dept(log_df, top_n) # Fallback to original
 
 
 # --- Original Top Items (Fallback or if smarter fails) ---
+# This function is NOT cached by default in this version, only the "smarter" one is.
 def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[str, List[str]]:
     """Calculates the top N most frequent items requested per department from all history."""
     if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns: return {}
@@ -575,7 +576,7 @@ with tab1:
                         (log_df_for_last_ordered['Department'] == current_dept_for_alert) # Use correct variable
                     ]['Qty']
                     # FIX: Check if item_dept_orders is not empty using .empty attribute
-                    if not item_dept_orders.empty: 
+                    if not item_dept_orders.empty:  # <<< THIS LINE WAS CORRECTED
                         median_qty = item_dept_orders.median()
                         if median_qty > 0: 
                             if current_qty > median_qty * 3 : 
@@ -663,7 +664,7 @@ with tab1:
                         log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
                         load_indent_log_data.clear()
                         calculate_top_items_per_dept_smarter.clear() 
-                        calculate_top_items_per_dept.clear() 
+                        # calculate_top_items_per_dept.clear() # This was the error source, original not cached
                     except gspread.exceptions.APIError as e: 
                         st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: 
