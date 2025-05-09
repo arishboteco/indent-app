@@ -226,11 +226,10 @@ def calculate_top_items_per_dept_smarter(log_df: pd.DataFrame, top_n: int = 7, d
         return top_items.to_dict()
     except Exception as e:
         st.warning(f"Could not calculate smarter top items: {e}")
-        return calculate_top_items_per_dept(log_df, top_n) # Fallback to original
+        return calculate_top_items_per_dept(log_df, top_n) 
 
 
 # --- Original Top Items (Fallback or if smarter fails) ---
-# This function is NOT cached by default in this version, only the "smarter" one is.
 def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[str, List[str]]:
     """Calculates the top N most frequent items requested per department from all history."""
     if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns: return {}
@@ -375,10 +374,11 @@ with tab1:
 
     def add_suggested_item(item_name_to_add):
         if item_name_to_add:
-            current_items = [item_dict.get('item') for item_dict in st.session_state.form_items if item_dict.get('item')]
-            if item_name_to_add in current_items: 
+            current_items_in_form = [item_dict.get('item') for item_dict in st.session_state.form_items if item_dict.get('item')]
+            if item_name_to_add in current_items_in_form:
                 st.toast(f"'{item_name_to_add}' is already in the list.", icon="ℹ️")
                 return
+
             unit_map = st.session_state.get("item_to_unit_lower", {})
             cat_map = st.session_state.get("item_to_category_lower", {})
             subcat_map = st.session_state.get("item_to_subcategory_lower", {})
@@ -387,9 +387,24 @@ with tab1:
             unit = unit if unit else "-"
             category = cat_map.get(item_lower)
             subcategory = subcat_map.get(item_lower)
-            new_id = f"item_{time.time_ns()}"
-            st.session_state.form_items.append({'id': new_id, 'item': item_name_to_add, 'qty': 1.0, 
-                                                 'note': '', 'unit': unit, 'category': category, 'subcategory': subcategory}) 
+
+            # MODIFIED LOGIC: Try to fill the first blank row
+            first_blank_row_index = -1
+            if st.session_state.form_items and st.session_state.form_items[0].get('item') is None:
+                first_blank_row_index = 0
+            
+            if first_blank_row_index == 0: # Populate the first blank row
+                st.session_state.form_items[0]['item'] = item_name_to_add
+                st.session_state.form_items[0]['qty'] = 1.0
+                st.session_state.form_items[0]['unit'] = unit
+                st.session_state.form_items[0]['category'] = category
+                st.session_state.form_items[0]['subcategory'] = subcategory
+                st.session_state.form_items[0]['note'] = '' # Clear any previous note
+            else: # Append a new row
+                new_id = f"item_{time.time_ns()}"
+                st.session_state.form_items.append({'id': new_id, 'item': item_name_to_add, 'qty': 1.0, 
+                                                     'note': '', 'unit': unit, 'category': category, 'subcategory': subcategory})
+
 
     def department_changed_callback():
         selected_dept = st.session_state.get("selected_dept")
@@ -408,7 +423,6 @@ with tab1:
             st.session_state.form_items[i]['subcategory'] = None
 
 
-    # Reverted to standard item_selected_callback for st.selectbox
     def item_selected_callback(item_id: str, selectbox_key: str):
         """Callback for when an item is selected using the standard dropdown."""
         unit_map = st.session_state.get("item_to_unit_lower", {})
@@ -493,7 +507,7 @@ with tab1:
         item_id = item_dict['id']
         qty_key = f"qty_{item_id}"
         note_key = f"note_{item_id}"
-        selectbox_key = f"item_select_{item_id}" # Key for standard selectbox
+        selectbox_key = f"item_select_{item_id}" 
         
         if qty_key in st.session_state: 
             try:
@@ -515,20 +529,18 @@ with tab1:
         duplicate_indicator = "⚠️ " if is_duplicate else ""
         expander_label = f"{duplicate_indicator}**{item_label}**"
 
-        with st.expander(label=expander_label, expanded=True): # Keep expanded
+        with st.expander(label=expander_label, expanded=True): 
             if is_duplicate: 
                 st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
 
-            # Reverted to original layout with st.selectbox
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1]) 
-            with col1: # Item Select & Cat/SubCat Info
+            with col1: 
                 available_options = st.session_state.get('available_items_for_dept', [""])
                 try: 
                     current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
                 except ValueError: 
                     current_item_index = 0
                 
-                # Using st.selectbox again
                 st.selectbox( 
                     "Item Select", 
                     options=available_options, 
@@ -541,12 +553,11 @@ with tab1:
                 )
                 st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
                 
-                # "Last Ordered Date" for Items
-                current_dept_for_filter = st.session_state.get("selected_dept", "") # Get current dept for this scope
+                current_dept_for_filter = st.session_state.get("selected_dept", "") 
                 if current_item_value and not log_df_for_last_ordered.empty and current_dept_for_filter:
                     item_log = log_df_for_last_ordered[
                         (log_df_for_last_ordered['Item'] == current_item_value) &
-                        (log_df_for_last_ordered['Department'] == current_dept_for_filter) # Use correct variable
+                        (log_df_for_last_ordered['Department'] == current_dept_for_filter) 
                     ]
                     if not item_log.empty:
                         last_ordered_date = item_log['Timestamp'].max().strftime("%d-%b-%Y")
@@ -554,10 +565,10 @@ with tab1:
                     else:
                         st.caption(f"Not recently ordered by {current_dept_for_filter}.")
 
-            with col2: # Note
+            with col2: 
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
             
-            with col3: # Quantity & Unit
+            with col3: 
                 st.number_input( 
                     "Quantity", 
                     min_value=0.001, 
@@ -568,15 +579,13 @@ with tab1:
                     label_visibility="collapsed" 
                 )
                 st.caption(f"Unit: {current_unit or '-'}") 
-                # Unusual Order Quantity Alert (can be placed here or after the number_input)
-                current_dept_for_alert = st.session_state.get("selected_dept", "") # Get current dept for this scope
+                current_dept_for_alert = st.session_state.get("selected_dept", "") 
                 if current_item_value and not log_df_for_last_ordered.empty and current_dept_for_alert:
                     item_dept_orders = log_df_for_last_ordered[
                         (log_df_for_last_ordered['Item'] == current_item_value) &
-                        (log_df_for_last_ordered['Department'] == current_dept_for_alert) # Use correct variable
+                        (log_df_for_last_ordered['Department'] == current_dept_for_alert) 
                     ]['Qty']
-                    # FIX: Check if item_dept_orders is not empty using .empty attribute
-                    if not item_dept_orders.empty:  # <<< THIS LINE WAS CORRECTED
+                    if not item_dept_orders.empty:  
                         median_qty = item_dept_orders.median()
                         if median_qty > 0: 
                             if current_qty > median_qty * 3 : 
@@ -584,7 +593,7 @@ with tab1:
                             elif current_qty < median_qty / 3 and current_qty > 0 : 
                                  st.info(f"Qty {current_qty:.2f} is lower than typical ({median_qty:.2f}).", icon="ℹ️")
             
-            with col4: # Remove Button
+            with col4: 
                 if len(st.session_state.form_items) > 1: 
                     st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
                 else: st.write("") 
