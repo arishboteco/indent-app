@@ -160,13 +160,12 @@ elif not reference_sheet and not st.session_state.data_loaded:
 if "form_items" not in st.session_state or not isinstance(st.session_state.form_items, list) or not st.session_state.form_items:
     st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1.0, 
                                     'note': '', 'unit': '-', 'category': None, 'subcategory': None}] 
-                                    # Removed 'item_search_term'
 else:
     for item_d in st.session_state.form_items:
         item_d.setdefault('category', None)
         item_d.setdefault('subcategory', None)
         item_d.setdefault('qty', float(item_d.get('qty', 1.0)))
-        if 'item_search_term' in item_d: # Clean up old key if present
+        if 'item_search_term' in item_d: 
             del item_d['item_search_term']
 
 
@@ -542,11 +541,11 @@ with tab1:
                 st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
                 
                 # "Last Ordered Date" for Items
-                current_dept_for_filter = st.session_state.get("selected_dept", "")
+                current_dept_for_filter = st.session_state.get("selected_dept", "") # Get current dept for this scope
                 if current_item_value and not log_df_for_last_ordered.empty and current_dept_for_filter:
                     item_log = log_df_for_last_ordered[
                         (log_df_for_last_ordered['Item'] == current_item_value) &
-                        (log_df_for_last_ordered['Department'] == current_dept_for_filter)
+                        (log_df_for_last_ordered['Department'] == current_dept_for_filter) # Use correct variable
                     ]
                     if not item_log.empty:
                         last_ordered_date = item_log['Timestamp'].max().strftime("%d-%b-%Y")
@@ -569,13 +568,14 @@ with tab1:
                 )
                 st.caption(f"Unit: {current_unit or '-'}") 
                 # Unusual Order Quantity Alert (can be placed here or after the number_input)
-                current_dept_for_alert = st.session_state.get("selected_dept", "")
+                current_dept_for_alert = st.session_state.get("selected_dept", "") # Get current dept for this scope
                 if current_item_value and not log_df_for_last_ordered.empty and current_dept_for_alert:
                     item_dept_orders = log_df_for_last_ordered[
                         (log_df_for_last_ordered['Item'] == current_item_value) &
-                        (log_df_for_last_ordered['Department'] == current_dept_for_alert)
+                        (log_df_for_last_ordered['Department'] == current_dept_for_alert) # Use correct variable
                     ]['Qty']
-                    if not item_dept_orders.empty():
+                    # FIX: Check if item_dept_orders is not empty using .empty attribute
+                    if not item_dept_orders.empty: 
                         median_qty = item_dept_orders.median()
                         if median_qty > 0: 
                             if current_qty > median_qty * 3 : 
