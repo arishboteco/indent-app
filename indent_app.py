@@ -404,31 +404,37 @@ with tab1:
                 st.session_state.form_items[i]['subcategory'] = subcategory
                 break
 
-    st.subheader("Indent Details")
-    col_head1, col_head2 = st.columns(2)
-    with col_head1:
-        last_dept = st.session_state.get('last_dept')
-        dept_index = 0
-        try: 
-            current_selection = st.session_state.get("selected_dept", last_dept)
-            if current_selection and current_selection in DEPARTMENTS:
-                dept_index = DEPARTMENTS.index(current_selection)
-        except (ValueError, TypeError): # Added TypeError for safety
+    # --- Header Inputs: Department, Date Required, Requester Name ---
+    # Enhancement: Use st.container for visual grouping
+    with st.container(border=True): # Added border=True for visual grouping
+        st.subheader("Indent Details")
+        col_head1, col_head2 = st.columns(2)
+        with col_head1:
+            last_dept = st.session_state.get('last_dept')
             dept_index = 0
-        dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select department first to filter items.", on_change=department_changed_callback )
-    with col_head2:
-        default_date_val = st.session_state.get("selected_date", date.today())
-        if not isinstance(default_date_val, date): default_date_val = date.today() # Ensure it's a date
-        delivery_date = st.date_input( "Date Required*", value=default_date_val, min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed." )
-    requester_name = st.text_input("Your Name / Requested By*", key="requested_by", value=st.session_state.requested_by, help="Enter the name of the person requesting the items.")
+            try: 
+                current_selection = st.session_state.get("selected_dept", last_dept)
+                if current_selection and current_selection in DEPARTMENTS:
+                    dept_index = DEPARTMENTS.index(current_selection)
+            except (ValueError, TypeError): 
+                dept_index = 0
+            dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select department first to filter items.", on_change=department_changed_callback )
+        with col_head2:
+            default_date_val = st.session_state.get("selected_date", date.today())
+            if not isinstance(default_date_val, date): default_date_val = date.today() 
+            delivery_date = st.date_input( "Date Required*", value=default_date_val, min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed." )
+        requester_name = st.text_input("Your Name / Requested By*", key="requested_by", value=st.session_state.requested_by, help="Enter the name of the person requesting the items.")
+
+    # This divider is now after the container for Indent Details
+    st.divider()
+
 
     if 'dept_items_map' in st.session_state and 'available_items_for_dept' not in st.session_state: 
         department_changed_callback()
     elif st.session_state.get("selected_dept") and not st.session_state.get('available_items_for_dept', [""]): 
         department_changed_callback()
 
-    st.divider()
-
+    # --- Suggested Items Section --- (No change in this section for current enhancements)
     selected_dept_for_suggestions = st.session_state.get("selected_dept")
     if selected_dept_for_suggestions and 'top_items_map' in st.session_state:
         suggestions = st.session_state.top_items_map.get(selected_dept_for_suggestions, [])
@@ -457,17 +463,16 @@ with tab1:
         note_key = f"note_{item_id}"
         selectbox_key = f"item_select_{item_id}"
         
-        # Persist widget changes to session_state.form_items
         if qty_key in st.session_state: 
             try:
-                st.session_state.form_items[i]['qty'] = float(st.session_state[qty_key]) # Store as float
+                st.session_state.form_items[i]['qty'] = float(st.session_state[qty_key]) 
             except (ValueError, TypeError):
-                 st.session_state.form_items[i]['qty'] = 1.0 # Default if error
+                 st.session_state.form_items[i]['qty'] = 1.0 
         if note_key in st.session_state: 
             st.session_state.form_items[i]['note'] = st.session_state[note_key]
         
         current_item_value = st.session_state.form_items[i].get('item')
-        current_qty = float(st.session_state.form_items[i].get('qty', 1.0)) # Ensure float for value
+        current_qty = float(st.session_state.form_items[i].get('qty', 1.0)) 
         current_note = st.session_state.form_items[i].get('note', '')
         current_unit = st.session_state.form_items[i].get('unit', '-')
         current_category = st.session_state.form_items[i].get('category')
@@ -497,10 +502,10 @@ with tab1:
             with col3: 
                 st.number_input( 
                     "Quantity", 
-                    min_value=0.001, # Allow small decimal values
-                    value=current_qty, # Pass float value
-                    step=0.01,       # Allow decimal steps
-                    format="%.3f",   # Format display to 3 decimal places
+                    min_value=0.001, 
+                    value=current_qty,  
+                    step=0.01,       
+                    format="%.3f",   
                     key=qty_key, 
                     label_visibility="collapsed" 
                 )
@@ -521,7 +526,7 @@ with tab1:
         st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True)
 
     has_duplicates = bool(duplicates_found_dict)
-    has_valid_items = any(item.get('item') and float(item.get('qty', 0.0)) > 0 for item in st.session_state.form_items) # Check float qty
+    has_valid_items = any(item.get('item') and float(item.get('qty', 0.0)) > 0 for item in st.session_state.form_items) 
     current_dept_tab1 = st.session_state.get("selected_dept", "")
     requester_name_filled = bool(st.session_state.get("requested_by", "").strip())
     submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1 or not requester_name_filled
@@ -538,7 +543,7 @@ with tab1:
 
 
     if st.button("Submit Indent Request", type="primary", use_container_width=True, disabled=submit_disabled, help=tooltip_message):
-        final_items_to_submit_unsorted: List[Tuple[str, float, str, str, Optional[str], Optional[str]]] = [] # Qty is float
+        final_items_to_submit_unsorted: List[Tuple[str, float, str, str, Optional[str], Optional[str]]] = [] 
         
         final_check_items = [item['item'] for item in st.session_state.form_items if item.get('item') and float(item.get('qty',0.0)) > 0]
         final_check_counts = Counter(final_check_items)
@@ -548,12 +553,12 @@ with tab1:
         
         for item_dict in st.session_state.form_items:
             selected_item = item_dict.get('item')
-            qty = float(item_dict.get('qty', 0.0)) # Ensure qty is float
+            qty = float(item_dict.get('qty', 0.0)) 
             unit = item_dict.get('unit', '-')
             note = item_dict.get('note', '')
             category = item_dict.get('category')
             subcategory = item_dict.get('subcategory')
-            if selected_item and qty > 0 and unit != '-': # Also check if unit is valid
+            if selected_item and qty > 0 and unit != '-': 
                 final_items_to_submit_unsorted.append(( selected_item, qty, unit, note, category or "Uncategorized", subcategory or "General" ))
             elif selected_item and qty > 0 and unit == '-':
                 st.warning(f"Item '{selected_item}' has quantity but no unit. It will be skipped.")
@@ -563,7 +568,6 @@ with tab1:
         
         final_items_to_submit = sorted( final_items_to_submit_unsorted, key=lambda x: (str(x[4] or ''), str(x[5] or ''), str(x[0])) )
         requester = st.session_state.get("requested_by", "").strip()
-        # Requester validation done by submit_disabled
 
         try:
             mrn = generate_mrn()
@@ -574,7 +578,6 @@ with tab1:
             formatted_date = date_to_format.strftime("%d-%m-%Y")
             current_dept_submit = st.session_state.get("selected_dept", "")
 
-            # Format qty as string with desired precision for Google Sheets
             rows_to_add = [[mrn, timestamp, requester, current_dept_submit, formatted_date, 
                             item, f"{qty_val:.3f}", unit, note if note else "N/A"] 
                            for item, qty_val, unit, note, cat, subcat in final_items_to_submit]
@@ -603,7 +606,6 @@ with tab1:
         st.balloons(); st.divider(); st.subheader("Submitted Indent Summary")
         st.info(f"**MRN:** {submitted_data['mrn']} | **Dept:** {submitted_data['dept']} | **Reqd Date:** {submitted_data['date']} | **By:** {submitted_data.get('requester', 'N/A')}")
         
-        # Ensure Qty is float for DataFrame display
         submitted_df_data = [list(item_s) for item_s in submitted_data['items']]
         submitted_df = pd.DataFrame( submitted_df_data, columns=["Item", "Qty", "Unit", "Note", "Category", "Sub-Category"] )
         
@@ -611,15 +613,15 @@ with tab1:
                      column_config={ 
                          "Category": st.column_config.TextColumn("Category"), 
                          "Sub-Category": st.column_config.TextColumn("Sub-Cat"),
-                         "Qty": st.column_config.NumberColumn("Qty", format="%.3f") # Format Qty in summary
+                         "Qty": st.column_config.NumberColumn("Qty", format="%.3f") 
                      })
-        total_submitted_qty = sum(float(item[1]) for item in submitted_data['items']) # Sum float Qty
-        st.markdown(f"**Total Submitted Items (sum of quantities):** {total_submitted_qty:.3f}"); st.divider() # Format total
+        total_submitted_qty = sum(float(item[1]) for item in submitted_data['items']) 
+        st.markdown(f"**Total Submitted Items (sum of quantities):** {total_submitted_qty:.3f}"); st.divider() 
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             try: 
-                pdf_data_bytes = create_indent_pdf(submitted_data) # Returns bytes
+                pdf_data_bytes = create_indent_pdf(submitted_data) 
                 st.download_button(label="📄 Download PDF", data=pdf_data_bytes, 
                                    file_name=f"Indent_{submitted_data['mrn']}.pdf", mime="application/pdf", use_container_width=True)
             except Exception as pdf_error: 
@@ -636,16 +638,21 @@ with tab1:
                 st.link_button("✅ Prepare WhatsApp Message", wa_url, use_container_width=True) # Removed target
             except Exception as wa_e: 
                 st.error(f"Could not create WhatsApp link: {wa_e}")
-        st.caption("NOTE: To share on WhatsApp, first Download PDF, then click Prepare WhatsApp Message, choose contact/group, and MANUALLY attach the downloaded PDF before sending.")
-        st.divider()
+        
+        # Enhancement: Explicit note for "Requested By" persistence
+        st.caption("Your name in 'Requested By' will be remembered for the next indent.") 
+        st.divider() # Moved divider here
+        
         if st.button("Start New Indent"): 
             st.session_state['submitted_data_for_summary'] = None
+            # The 'requested_by' field in st.session_state is intentionally NOT cleared here
+            # to persist it for the next indent. clear_all_items() only resets the item list.
             st.rerun() 
 
 # --- TAB 2: View Indents ---
 with tab2:
     st.subheader("View Past Indent Requests")
-    log_df_tab2 = load_indent_log_data() # load_indent_log_data handles float Qty
+    log_df_tab2 = load_indent_log_data() 
     if not log_df_tab2.empty:
         st.divider()
         with st.expander("Filter Options", expanded=True):
@@ -657,7 +664,7 @@ with tab2:
             default_start = date.today() - pd.Timedelta(days=90)
             
             min_date_log = min_ts.date() if pd.notna(min_ts) else default_start
-            max_date_log = max_ts.date() if pd.notna(max_ts) else date.today() # Use today if max_ts is NaT
+            max_date_log = max_ts.date() if pd.notna(max_ts) else date.today() 
             
             calculated_default_start = max(min_date_log, default_start) if default_start < max_date_log else min_date_log
             if calculated_default_start > max_date_log : calculated_default_start = min_date_log
@@ -699,7 +706,6 @@ with tab2:
                 filtered_df = filtered_df[filtered_df['Item'].astype(str).str.contains(st.session_state.filt_item, case=False, na=False)]
         except Exception as filter_e: 
             st.error(f"Filter error: {filter_e}")
-            # filtered_df remains a copy of log_df_tab2 on error
         
         st.divider()
         st.write(f"Displaying {len(filtered_df)} records based on filters:")
@@ -711,7 +717,7 @@ with tab2:
                 "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD/MM/YYYY"), 
                 "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"), 
                 "Requested By": st.column_config.TextColumn("Req. By"), 
-                "Qty": st.column_config.NumberColumn("Qty", format="%.3f"), # Format Qty for float display
+                "Qty": st.column_config.NumberColumn("Qty", format="%.3f"), 
                 "MRN": st.column_config.TextColumn("MRN"), 
                 "Department": st.column_config.TextColumn("Dept."), 
                 "Item": st.column_config.TextColumn("Item Name", width="medium"), 
