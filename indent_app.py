@@ -2,16 +2,17 @@ import streamlit as st
 import pandas as pd
 import gspread
 from gspread import Client, Spreadsheet, Worksheet
-from fpdf import FPDF # Assuming fpdf2 is installed and works with this import
+from fpdf import FPDF 
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import json
-from PIL import Image # Kept import as it was in your stable version, though logo code is commented
+from PIL import Image 
 from collections import Counter, defaultdict 
 from typing import Any, Dict, List, Tuple, Optional, DefaultDict, Union
 import time
 from operator import itemgetter 
 import urllib.parse 
+from fuzzywuzzy import process as fuzzy_process # For fuzzy search
 
 # --- Configuration & Setup ---
 
@@ -21,11 +22,12 @@ st.title("Material Indent Form")
 # Google Sheets setup & Credentials Handling
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"] 
-TOP_N_SUGGESTIONS = 7 
+TOP_N_SUGGESTIONS = 5 # Reduced for potentially smarter suggestions
+FUZZY_SEARCH_LIMIT = 3 # How many fuzzy matches to show
 
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
 def connect_gsheets():
-    # Function to connect to Google Sheets and return client, log_sheet, and reference_sheet objects
+    # Function to connect to Google Sheets
     try:
         if "gcp_service_account" not in st.secrets: 
             st.error("Missing GCP credentials!")
@@ -74,7 +76,7 @@ if not client or not log_sheet or not reference_sheet:
     st.error("Failed Sheets connection.")
     st.stop()
 
-# --- Reference Data Loading Function (Reads Item, Unit, Category & Sub-Category) ---
+# --- Reference Data Loading ---
 @st.cache_data(ttl=3600, show_spinner="Fetching item reference data...")
 def get_reference_data(_reference_sheet: Worksheet) -> Tuple[DefaultDict[str, List[str]], Dict[str, str], Dict[str, str], Dict[str, str]]:
     item_to_unit_lower: Dict[str, str] = {}
@@ -86,7 +88,6 @@ def get_reference_data(_reference_sheet: Worksheet) -> Tuple[DefaultDict[str, Li
         header_skipped: bool = False
         valid_departments = set(dept for dept in DEPARTMENTS if dept)
 
-        # Simple header detection
         if all_data and ("item" in str(all_data[0][0]).lower() or "unit" in str(all_data[0][1]).lower()):
             header_skipped = True
             data_rows = all_data[1:]
@@ -95,12 +96,11 @@ def get_reference_data(_reference_sheet: Worksheet) -> Tuple[DefaultDict[str, Li
 
         for i, row in enumerate(data_rows):
             row_num_for_warning = i + (2 if header_skipped else 1)
-            if len(row) < 5: # Item, Unit, Permitted Depts, Category, Sub-Category
+            if len(row) < 5: 
                 if any(str(cell).strip() for cell in row):
-                     st.warning(f"Skipping row {row_num_for_warning} in 'reference' sheet: expected at least 5 columns, found {len(row)}.")
+                     st.warning(f"Skipping row {row_num_for_warning} in 'reference' sheet: expected 5 columns, found {len(row)}.")
                 continue
-            if not any(str(cell).strip() for cell in row[:5]):
-                continue
+            if not any(str(cell).strip() for cell in row[:5]): continue
             
             item: str = str(row[0]).strip()
             unit: str = str(row[1]).strip()
@@ -137,7 +137,6 @@ def get_reference_data(_reference_sheet: Worksheet) -> Tuple[DefaultDict[str, Li
         st.error(f"Error loading reference: {e}")
     return defaultdict(list), {}, {}, {}
 
-
 # --- Load Reference Data and Initialize State ---
 if 'data_loaded' not in st.session_state: 
     st.session_state.data_loaded = False
@@ -148,9 +147,9 @@ if not st.session_state.data_loaded and reference_sheet:
     st.session_state['item_to_unit_lower'] = unit_map
     st.session_state['item_to_category_lower'] = cat_map
     st.session_state['item_to_subcategory_lower'] = subcat_map
-    st.session_state['available_items_for_dept'] = [""]
+    st.session_state['available_items_for_dept'] = [""] # Will be populated by department_changed_callback
     st.session_state.data_loaded = True
-elif not reference_sheet and not st.session_state.data_loaded: # Added check for data_loaded
+elif not reference_sheet and not st.session_state.data_loaded: 
     st.error("Cannot load reference data.")
     st.session_state['dept_items_map'] = defaultdict(list)
     st.session_state['item_to_unit_lower'] = {}
@@ -158,16 +157,17 @@ elif not reference_sheet and not st.session_state.data_loaded: # Added check for
     st.session_state['item_to_subcategory_lower'] = {}
     st.session_state['available_items_for_dept'] = [""]
 
-# Initialize form_items with qty as float
 if "form_items" not in st.session_state or not isinstance(st.session_state.form_items, list) or not st.session_state.form_items:
-    st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 
-                                    'qty': 1.0, # Qty as float
-                                    'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
+    st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1.0, 
+                                    'note': '', 'unit': '-', 'category': None, 'subcategory': None,
+                                    'item_search_term': ''}] # Added for fuzzy search state per item
 else:
     for item_d in st.session_state.form_items:
         item_d.setdefault('category', None)
         item_d.setdefault('subcategory', None)
-        item_d.setdefault('qty', float(item_d.get('qty', 1.0))) # Ensure qty is float
+        item_d.setdefault('qty', float(item_d.get('qty', 1.0)))
+        item_d.setdefault('item_search_term', item_d.get('item_search_term', ''))
+
 
 if 'last_dept' not in st.session_state: st.session_state.last_dept = None
 if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
@@ -189,14 +189,9 @@ def load_indent_log_data() -> pd.DataFrame:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
         if 'Date Required' in df.columns: df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
-        
-        # Qty should be float
-        if 'Qty' in df.columns: 
-            df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0.0) # Treat Qty as float
-        
+        if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0.0)
         for col in ['Item', 'Unit', 'Note', 'MRN', 'Department', 'Requested By']:
-            if col in df.columns: df[col] = df[col].astype(str).fillna('') # Use astype(str) before fillna
-        
+            if col in df.columns: df[col] = df[col].astype(str).fillna('')
         display_cols = [col for col in expected_cols if col in df.columns]
         df = df[display_cols]
         df = df.dropna(subset=['Timestamp'])
@@ -208,25 +203,56 @@ def load_indent_log_data() -> pd.DataFrame:
         st.error(f"Error loading/cleaning log: {e}")
         return pd.DataFrame()
 
-# --- Function: Calculate Top Items per Department (Cached) ---
+# --- Smarter Item Suggestions (Recency Weighted) ---
 @st.cache_data(ttl=3600, show_spinner="Analyzing history for suggestions...")
+def calculate_top_items_per_dept_smarter(log_df: pd.DataFrame, top_n: int = 7, days_recency: int = 90) -> Dict[str, List[str]]:
+    """Calculates top N items, giving weight to recent orders."""
+    if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns or 'Timestamp' not in log_df.columns:
+        return {}
+    
+    # Filter for recent records
+    cutoff_date = datetime.now() - timedelta(days=days_recency)
+    recent_log_df = log_df[log_df['Timestamp'] >= cutoff_date].copy() # Use .copy() to avoid SettingWithCopyWarning
+
+    if recent_log_df.empty: # Fallback to all data if no recent data
+        recent_log_df = log_df.copy()
+
+    recent_log_df.dropna(subset=['Department', 'Item'], inplace=True)
+    recent_log_df = recent_log_df[recent_log_df['Item'].astype(str).str.strip() != '']
+    recent_log_df['Item'] = recent_log_df['Item'].astype(str)
+    
+    if recent_log_df.empty: return {}
+    try:
+        top_items = recent_log_df.groupby('Department')['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
+        return top_items.to_dict()
+    except Exception as e:
+        st.warning(f"Could not calculate smarter top items: {e}")
+        # Fallback to original method if smarter one fails
+        return calculate_top_items_per_dept(log_df, top_n) # Original function for fallback
+
+
+# --- Original Top Items (Fallback or if smarter fails) ---
+# This function is kept for fallback or if you prefer the simpler original logic
 def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[str, List[str]]:
-    """Calculates the top N most frequent items requested per department."""
+    """Calculates the top N most frequent items requested per department from all history."""
     if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns: return {}
     log_df_clean = log_df.dropna(subset=['Department', 'Item'])
-    log_df_clean = log_df_clean[log_df_clean['Item'].astype(str).str.strip() != ''] # Ensure Item is not blank string
+    log_df_clean = log_df_clean[log_df_clean['Item'].astype(str).str.strip() != '']
     log_df_clean['Item'] = log_df_clean['Item'].astype(str)
     if log_df_clean.empty: return {}
     try:
         top_items = log_df_clean.groupby('Department')['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
         return top_items.to_dict()
     except Exception as e: 
-        st.warning(f"Could not calculate top items: {e}")
+        st.warning(f"Could not calculate (original) top items: {e}")
         return {}
 
 # --- Load historical data & Calculate suggestions ---
 log_data_for_suggestions = load_indent_log_data()
-top_items_map = calculate_top_items_per_dept(log_data_for_suggestions, top_n=TOP_N_SUGGESTIONS)
+# Use the smarter suggestion function
+top_items_map = calculate_top_items_per_dept_smarter(log_data_for_suggestions, top_n=TOP_N_SUGGESTIONS, days_recency=90) 
+if not top_items_map: # If smarter suggestions yield nothing, try original
+    top_items_map = calculate_top_items_per_dept(log_data_for_suggestions, top_n=TOP_N_SUGGESTIONS)
 st.session_state['top_items_map'] = top_items_map
 
 
@@ -249,7 +275,7 @@ def generate_mrn() -> str:
                 last_valid_num = int(mrn_str[4:])
                 break
         if last_valid_num == 0: 
-            non_empty_count = sum(1 for v in all_mrns if str(v).strip()) # Use str(v)
+            non_empty_count = sum(1 for v in all_mrns if str(v).strip()) 
             last_valid_num = max(0, non_empty_count - 1)
         next_number = last_valid_num + 1
     return f"MRN-{str(next_number).zfill(3)}"
@@ -272,7 +298,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     pdf.ln(6)
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_fill_color(230, 230, 230)
-    col_widths = {'item': 90, 'qty': 20, 'unit': 25, 'note': 55} # Adjusted for float qty
+    col_widths = {'item': 90, 'qty': 20, 'unit': 25, 'note': 55} 
     pdf.cell(col_widths['item'], 7, "Item", border=1, ln=0, align='C', fill=True)
     pdf.cell(col_widths['qty'], 7, "Qty", border=1, ln=0, align='C', fill=True)
     pdf.cell(col_widths['unit'], 7, "Unit", border=1, ln=0, align='C', fill=True)
@@ -283,7 +309,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     if not isinstance(items_data, list): items_data = []
     for item_tuple in items_data:
         if len(item_tuple) < 6: continue
-        item, qty_val, unit, note, category, subcategory = item_tuple # qty_val is float
+        item, qty_val, unit, note, category, subcategory = item_tuple 
         category = category or "Uncategorized"
         subcategory = subcategory or "General"
         if category != current_category: 
@@ -305,7 +331,7 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         pdf.multi_cell(col_widths['item'], line_height, str(item), border='LR', align='L')
         y1 = pdf.get_y()
         pdf.set_xy(pdf.l_margin + col_widths['item'], start_y)
-        pdf.multi_cell(col_widths['qty'], line_height, f"{float(qty_val):.3f}", border='R', align='C') # Format float qty
+        pdf.multi_cell(col_widths['qty'], line_height, f"{float(qty_val):.3f}", border='R', align='C') 
         y2 = pdf.get_y()
         pdf.set_xy(pdf.l_margin + col_widths['item'] + col_widths['qty'], start_y)
         pdf.multi_cell(col_widths['unit'], line_height, str(unit), border='R', align='C')
@@ -318,13 +344,12 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
         pdf.set_y(final_y)
         pdf.ln(0.1)
     
-    # FIX for PDF output: Ensure it returns bytes
-    pdf_output_data = pdf.output(dest='S') # For fpdf2, dest='S' returns bytes
+    pdf_output_data = pdf.output(dest='S') 
     if isinstance(pdf_output_data, bytearray):
-        return bytes(pdf_output_data) # Convert bytearray to bytes
-    elif isinstance(pdf_output_data, str): # Fallback for older fpdf
+        return bytes(pdf_output_data) 
+    elif isinstance(pdf_output_data, str): 
         return pdf_output_data.encode('latin-1')
-    return pdf_output_data # Assume it's already bytes
+    return pdf_output_data 
 
 
 # --- UI Tabs ---
@@ -336,14 +361,18 @@ with tab1:
         if not isinstance(count, int) or count < 1: count = 1
         for _ in range(count): 
             new_id = f"item_{time.time_ns()}"
-            st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1.0, 'note': '', 'unit': '-', 'category': None, 'subcategory': None})
+            st.session_state.form_items.append({'id': new_id, 'item': None, 'qty': 1.0, 
+                                                 'note': '', 'unit': '-', 'category': None, 'subcategory': None,
+                                                 'item_search_term': ''}) # For fuzzy search
 
     def remove_item(item_id): 
         st.session_state.form_items = [item for item in st.session_state.form_items if item['id'] != item_id]
         if not st.session_state.form_items: add_item(count=1)
 
     def clear_all_items(): 
-        st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1.0, 'note': '', 'unit': '-', 'category': None, 'subcategory': None}]
+        st.session_state.form_items = [{'id': f"item_{time.time_ns()}", 'item': None, 'qty': 1.0, 
+                                         'note': '', 'unit': '-', 'category': None, 'subcategory': None,
+                                         'item_search_term': ''}]
 
     def handle_add_items_click(): 
         num_to_add = st.session_state.get('num_items_to_add', 1)
@@ -364,49 +393,60 @@ with tab1:
             category = cat_map.get(item_lower)
             subcategory = subcat_map.get(item_lower)
             new_id = f"item_{time.time_ns()}"
-            st.session_state.form_items.append({'id': new_id, 'item': item_name_to_add, 'qty': 1.0, 'note': '', 'unit': unit, 'category': category, 'subcategory': subcategory})
+            st.session_state.form_items.append({'id': new_id, 'item': item_name_to_add, 'qty': 1.0, 
+                                                 'note': '', 'unit': unit, 'category': category, 'subcategory': subcategory,
+                                                 'item_search_term': item_name_to_add}) # Pre-fill search term
 
     def department_changed_callback():
         selected_dept = st.session_state.get("selected_dept")
         dept_map = st.session_state.get("dept_items_map", defaultdict(list))
-        available_items = [""]
-        if selected_dept and selected_dept in dept_map: # Check if selected_dept is a valid key
+        available_items = [""] # Start with a blank for fuzzy search input
+        if selected_dept and selected_dept in dept_map: 
             specific_items = dept_map.get(selected_dept, [])
-            available_items.extend(specific_items) # Items are already sorted and unique
+            available_items.extend(specific_items) 
         st.session_state.available_items_for_dept = available_items
         for i in range(len(st.session_state.form_items)): 
             st.session_state.form_items[i]['item'] = None
             st.session_state.form_items[i]['unit'] = '-'
-            st.session_state.form_items[i]['qty'] = 1.0 # Reset qty to float
+            st.session_state.form_items[i]['qty'] = 1.0 
             st.session_state.form_items[i]['note'] = ''
             st.session_state.form_items[i]['category'] = None
             st.session_state.form_items[i]['subcategory'] = None
+            st.session_state.form_items[i]['item_search_term'] = ''
 
-    def item_selected_callback(item_id, selectbox_key):
+
+    def item_selected_logic(item_id, selected_item_name):
+        """Reusable logic to update item details once an item is chosen (either by fuzzy search or direct selection)."""
         unit_map = st.session_state.get("item_to_unit_lower", {})
         cat_map = st.session_state.get("item_to_category_lower", {})
         subcat_map = st.session_state.get("item_to_subcategory_lower", {})
-        selected_item_name = st.session_state.get(selectbox_key)
+        
         unit = "-"
         category = None
         subcategory = None
+
         if selected_item_name:
             item_lower = selected_item_name.lower()
             unit = unit_map.get(item_lower, "-")
             unit = unit if unit else "-"
             category = cat_map.get(item_lower)
             subcategory = subcat_map.get(item_lower)
-        for i, item_dict in enumerate(st.session_state.form_items):
-            if item_dict['id'] == item_id:
+            
+        for i, item_dict_loop in enumerate(st.session_state.form_items):
+            if item_dict_loop['id'] == item_id:
                 st.session_state.form_items[i]['item'] = selected_item_name if selected_item_name else None
                 st.session_state.form_items[i]['unit'] = unit
                 st.session_state.form_items[i]['category'] = category
                 st.session_state.form_items[i]['subcategory'] = subcategory
+                st.session_state.form_items[i]['item_search_term'] = selected_item_name if selected_item_name else '' # Update search term
                 break
+    
+    # Callback for fuzzy search selection button
+    def fuzzy_item_selected_callback(item_id, chosen_item_name):
+        item_selected_logic(item_id, chosen_item_name)
 
-    # --- Header Inputs: Department, Date Required, Requester Name ---
-    # Enhancement: Use st.container for visual grouping
-    with st.container(border=True): # Added border=True for visual grouping
+
+    with st.container(border=True): 
         st.subheader("Indent Details")
         col_head1, col_head2 = st.columns(2)
         with col_head1:
@@ -418,14 +458,16 @@ with tab1:
                     dept_index = DEPARTMENTS.index(current_selection)
             except (ValueError, TypeError): 
                 dept_index = 0
+            # Visual Feedback for Required Fields: Added asterisk
             dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select department first to filter items.", on_change=department_changed_callback )
         with col_head2:
             default_date_val = st.session_state.get("selected_date", date.today())
             if not isinstance(default_date_val, date): default_date_val = date.today() 
+            # Visual Feedback for Required Fields: Added asterisk
             delivery_date = st.date_input( "Date Required*", value=default_date_val, min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed." )
+        # Visual Feedback for Required Fields: Added asterisk
         requester_name = st.text_input("Your Name / Requested By*", key="requested_by", value=st.session_state.requested_by, help="Enter the name of the person requesting the items.")
 
-    # This divider is now after the container for Indent Details
     st.divider()
 
 
@@ -434,17 +476,16 @@ with tab1:
     elif st.session_state.get("selected_dept") and not st.session_state.get('available_items_for_dept', [""]): 
         department_changed_callback()
 
-    # --- Suggested Items Section --- (No change in this section for current enhancements)
     selected_dept_for_suggestions = st.session_state.get("selected_dept")
     if selected_dept_for_suggestions and 'top_items_map' in st.session_state:
         suggestions = st.session_state.top_items_map.get(selected_dept_for_suggestions, [])
         items_already_in_form = [item_d.get('item') for item_d in st.session_state.form_items if item_d.get('item')]
         valid_suggestions = [item for item in suggestions if item not in items_already_in_form]
         if valid_suggestions:
-            st.subheader("✨ Quick Add Common Items")
-            num_suggestion_cols = min(len(valid_suggestions), 5)
+            st.subheader("✨ Quick Add Common Items (Recently Popular)") # Updated title
+            num_suggestion_cols = min(len(valid_suggestions), TOP_N_SUGGESTIONS, 5) # Use TOP_N_SUGGESTIONS
             suggestion_cols = st.columns(num_suggestion_cols)
-            for idx, item_name_sugg in enumerate(valid_suggestions):
+            for idx, item_name_sugg in enumerate(valid_suggestions[:num_suggestion_cols]): # Limit to num_suggestion_cols
                 col_index = idx % num_suggestion_cols
                 with suggestion_cols[col_index]: 
                     st.button( f"+ {item_name_sugg}", key=f"suggest_{selected_dept_for_suggestions}_{item_name_sugg.replace(' ', '_').replace('/', '_')}", 
@@ -457,11 +498,15 @@ with tab1:
     duplicate_item_counts = Counter(current_selected_items_in_form)
     duplicates_found_dict = { item: count for item, count in duplicate_item_counts.items() if count > 1 }
     items_to_render = list(st.session_state.form_items)
+    
+    # Prepare log data once for all item rows for "Last Ordered Date"
+    log_df_for_last_ordered = load_indent_log_data()
+
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
         qty_key = f"qty_{item_id}"
         note_key = f"note_{item_id}"
-        selectbox_key = f"item_select_{item_id}"
+        item_search_key = f"item_search_{item_id}" # Key for fuzzy search input
         
         if qty_key in st.session_state: 
             try:
@@ -470,6 +515,8 @@ with tab1:
                  st.session_state.form_items[i]['qty'] = 1.0 
         if note_key in st.session_state: 
             st.session_state.form_items[i]['note'] = st.session_state[note_key]
+        if item_search_key in st.session_state: # Persist search term
+            st.session_state.form_items[i]['item_search_term'] = st.session_state[item_search_key]
         
         current_item_value = st.session_state.form_items[i].get('item')
         current_qty = float(st.session_state.form_items[i].get('qty', 1.0)) 
@@ -477,43 +524,91 @@ with tab1:
         current_unit = st.session_state.form_items[i].get('unit', '-')
         current_category = st.session_state.form_items[i].get('category')
         current_subcategory = st.session_state.form_items[i].get('subcategory')
+        current_search_term = st.session_state.form_items[i].get('item_search_term', '')
+
         item_label = current_item_value if current_item_value else f"Item #{i+1}"
         is_duplicate = current_item_value and current_item_value in duplicates_found_dict
         duplicate_indicator = "⚠️ " if is_duplicate else ""
         expander_label = f"{duplicate_indicator}**{item_label}**"
 
-        with st.expander(label=expander_label, expanded=True):
+        with st.expander(label=expander_label, expanded=not bool(current_item_value)): # Expand if no item selected yet
             if is_duplicate: 
                 st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
 
-            col1, col2, col3, col4 = st.columns([4, 3, 1, 1]) 
-            with col1: 
-                available_options = st.session_state.get('available_items_for_dept', [""])
-                try: 
-                    current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
-                except ValueError: 
-                    current_item_index = 0
-                st.selectbox( "Item Select", options=available_options, index=current_item_index, key=selectbox_key, 
-                             placeholder="Select item for department...", label_visibility="collapsed", 
-                             on_change=item_selected_callback, args=(item_id, selectbox_key) )
-                st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
-            with col2: 
-                st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
-            with col3: 
-                st.number_input( 
-                    "Quantity", 
-                    min_value=0.001, 
-                    value=current_qty,  
-                    step=0.01,       
-                    format="%.3f",   
-                    key=qty_key, 
-                    label_visibility="collapsed" 
-                )
-                st.caption(f"Unit: {current_unit or '-'}") 
-            with col4: 
+            # Fuzzy Search Input and Item Details
+            col_search, col_details = st.columns([3, 2])
+            with col_search:
+                # Fuzzy Search Text Input
+                st.text_input("Search Item", value=current_search_term, key=item_search_key, 
+                               placeholder="Type to search items...",
+                               help="Type item name, then click on a match below to select.")
+                
+                available_options_dept = st.session_state.get('available_items_for_dept', [""])
+                if st.session_state[item_search_key] and len(available_options_dept) > 1: # Show suggestions if search term exists
+                    fuzzy_matches = fuzzy_process.extract(st.session_state[item_search_key], available_options_dept[1:], limit=FUZZY_SEARCH_LIMIT) # Exclude blank
+                    for match_name, score in fuzzy_matches:
+                        if score > 75: # Threshold for showing a match
+                            if st.button(f"{match_name} (Match: {score}%)", key=f"fuzzy_{item_id}_{match_name.replace(' ','_')}", use_container_width=True):
+                                fuzzy_item_selected_callback(item_id, match_name)
+                                st.rerun() # Rerun to update the selected item display
+            
+            with col_details:
+                if current_item_value: # Show details if an item is selected
+                    st.markdown(f"**Selected:** {current_item_value}")
+                    st.caption(f"Unit: {current_unit or '-'}")
+                    st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
+
+                    # "Last Ordered Date" for Items
+                    if not log_df_for_last_ordered.empty and current_dept_tab1 and current_item_value:
+                        item_log = log_df_for_last_ordered[
+                            (log_df_for_last_ordered['Item'] == current_item_value) &
+                            (log_df_for_last_ordered['Department'] == current_dept_tab1)
+                        ]
+                        if not item_log.empty:
+                            last_ordered_date = item_log['Timestamp'].max().strftime("%d-%b-%Y")
+                            st.caption(f"Last ordered by {current_dept_tab1}: {last_ordered_date}")
+                        else:
+                            st.caption(f"Not recently ordered by {current_dept_tab1}.")
+                else:
+                    st.caption("No item selected. Use search above.")
+
+
+            # Quantity and Note inputs remain below the search/details area
+            col_qty_note, col_remove_btn = st.columns([4,1])
+            with col_qty_note:
+                qty_note_cols = st.columns(2)
+                with qty_note_cols[0]:
+                    st.number_input( 
+                        "Quantity", 
+                        min_value=0.001, 
+                        value=current_qty,  
+                        step=0.01,       
+                        format="%.3f",   
+                        key=qty_key, 
+                        label_visibility="collapsed" 
+                    )
+                    # Unusual Order Quantity Alert
+                    if current_item_value and not log_df_for_last_ordered.empty:
+                        item_dept_orders = log_df_for_last_ordered[
+                            (log_df_for_last_ordered['Item'] == current_item_value) &
+                            (log_df_for_last_ordered['Department'] == current_dept_tab1)
+                        ]['Qty']
+                        if not item_dept_orders.empty():
+                            median_qty = item_dept_orders.median()
+                            if current_qty > median_qty * 3 and median_qty > 0: # Example: 3x median
+                                st.warning(f"Qty {current_qty} is much higher than typical ({median_qty:.2f}) for this item.", icon="❗")
+                            elif current_qty < median_qty / 3 and current_qty > 0 and median_qty > 0: # Example: less than 1/3 median
+                                 st.info(f"Qty {current_qty} is lower than typical ({median_qty:.2f}) for this item.", icon="ℹ️")
+
+
+                with qty_note_cols[1]:
+                    st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
+            
+            with col_remove_btn:
                 if len(st.session_state.form_items) > 1: 
                     st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
-                else: st.write("")
+                else: st.write("") # Keep layout consistent
+
 
     st.divider() 
 
@@ -532,10 +627,11 @@ with tab1:
     submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1 or not requester_name_filled
     error_messages = []
     tooltip_message = "Submit the current indent request."
+    # Visual Feedback for Required Fields: Error messages already cover this functionally
     if not has_valid_items: error_messages.append("Add at least one valid item with quantity > 0.")
     if has_duplicates: error_messages.append(f"Remove duplicate items (marked with ⚠️): {', '.join(duplicates_found_dict.keys())}.")
-    if not current_dept_tab1: error_messages.append("Select a department.")
-    if not requester_name_filled: error_messages.append("Enter the requester's name.")
+    if not current_dept_tab1: error_messages.append("Select a department (marked with *).")
+    if not requester_name_filled: error_messages.append("Enter the requester's name (marked with *).")
     st.divider()
     if error_messages:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
@@ -587,7 +683,8 @@ with tab1:
                     try: 
                         log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
                         load_indent_log_data.clear()
-                        calculate_top_items_per_dept.clear()
+                        calculate_top_items_per_dept_smarter.clear() # Clear new suggestion cache
+                        calculate_top_items_per_dept.clear() # Clear old suggestion cache
                     except gspread.exceptions.APIError as e: 
                         st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: 
@@ -635,18 +732,15 @@ with tab1:
                            "Please see attached PDF for item details.")
                 encoded_text = urllib.parse.quote_plus(wa_text)
                 wa_url = f"https://wa.me/?text={encoded_text}"
-                st.link_button("✅ Prepare WhatsApp Message", wa_url, use_container_width=True) # Removed target
+                st.link_button("✅ Prepare WhatsApp Message", wa_url, use_container_width=True) 
             except Exception as wa_e: 
                 st.error(f"Could not create WhatsApp link: {wa_e}")
         
-        # Enhancement: Explicit note for "Requested By" persistence
         st.caption("Your name in 'Requested By' will be remembered for the next indent.") 
-        st.divider() # Moved divider here
+        st.divider() 
         
         if st.button("Start New Indent"): 
             st.session_state['submitted_data_for_summary'] = None
-            # The 'requested_by' field in st.session_state is intentionally NOT cleared here
-            # to persist it for the next indent. clear_all_items() only resets the item list.
             st.rerun() 
 
 # --- TAB 2: View Indents ---
