@@ -1,6 +1,13 @@
 [theme]
-primaryColor="#2ECC71"
-backgroundColor="#0C0F14"
-secondaryBackgroundColor="#1E2229"
-textColor="#E8F1F2"
-font="sans serif"        # optional, defaults to system UI font
+primaryColor = "#2ECC71"
+backgroundColor = "#0C0F14"
+secondaryBackgroundColor = "#1E2229"
+textColor = "#E8F1F2"
+font = "sans serif"
+
+[server]
+headless = true        # required by most PaaS
+port = 8501            # default; Streamlit Cloud ignores this
+
+[client]
+toolbarMode = "minimal"   # hides “Deploy”, “Share”, etc. for end users
