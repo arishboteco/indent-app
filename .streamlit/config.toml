@@ -1,9 +1,9 @@
-# Theme 5 – Ocean Teal
+# Theme 7 – Stone & Lime
 [theme]
-primaryColor = "#1ABC9C"
-backgroundColor = "#0B1114"
-secondaryBackgroundColor = "#182024"
-textColor = "#EAF2F2"
+primaryColor = "#B5FF7D"
+backgroundColor = "#0E0F0E"
+secondaryBackgroundColor = "#1D1F1D"
+textColor = "#FFFFFF"
 font = "sans serif"
 
 [server]
