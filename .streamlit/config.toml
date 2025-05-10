@@ -1,9 +1,9 @@
-# Theme 4 – Brazil Sunset
+# Theme 5 – Ocean Teal
 [theme]
-primaryColor = "#FF8C42"
-backgroundColor = "#111312"
-secondaryBackgroundColor = "#1F2220"
-textColor = "#FDFDFD"
+primaryColor = "#1ABC9C"
+backgroundColor = "#0B1114"
+secondaryBackgroundColor = "#182024"
+textColor = "#EAF2F2"
 font = "sans serif"
 
 [server]
