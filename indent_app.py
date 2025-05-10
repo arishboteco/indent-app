@@ -226,11 +226,10 @@ def calculate_top_items_per_dept_smarter(log_df: pd.DataFrame, top_n: int = 7, d
         return top_items.to_dict()
     except Exception as e:
         st.warning(f"Could not calculate smarter top items: {e}")
-        return calculate_top_items_per_dept(log_df, top_n) # Fallback to original
+        return calculate_top_items_per_dept(log_df, top_n) 
 
 
-# --- Original Top Items (Fallback or if smarter fails) ---
-# This function is NOT cached by default in this version, only the "smarter" one is.
+# --- Original Top Items (Fallback) ---
 def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[str, List[str]]:
     """Calculates the top N most frequent items requested per department from all history."""
     if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns: return {}
@@ -245,12 +244,40 @@ def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[s
         st.warning(f"Could not calculate (original) top items: {e}")
         return {}
 
-# --- Load historical data & Calculate suggestions ---
-log_data_for_suggestions = load_indent_log_data()
-top_items_map = calculate_top_items_per_dept_smarter(log_data_for_suggestions, top_n=TOP_N_SUGGESTIONS, days_recency=90) 
+# --- Pre-calculation for "Last Ordered Date" and "Median Quantity" ---
+@st.cache_data(ttl=300) 
+def get_last_ordered_dates_map(log_df: pd.DataFrame) -> Dict[Tuple[str, str], str]:
+    """Creates a map of (Item, Department) to last ordered date string."""
+    if log_df.empty or 'Item' not in log_df.columns or 'Department' not in log_df.columns or 'Timestamp' not in log_df.columns:
+        return {}
+    idx = log_df.groupby(['Department', 'Item'])['Timestamp'].idxmax()
+    last_ordered_df = log_df.loc[idx]
+    
+    last_ordered_map = {}
+    for _, row in last_ordered_df.iterrows():
+        last_ordered_map[(row['Item'], row['Department'])] = row['Timestamp'].strftime("%d-%b-%Y")
+    return last_ordered_map
+
+@st.cache_data(ttl=300)
+def get_median_order_quantities_map(log_df: pd.DataFrame) -> Dict[Tuple[str, str], float]:
+    """Creates a map of (Item, Department) to median order quantity."""
+    if log_df.empty or 'Item' not in log_df.columns or 'Department' not in log_df.columns or 'Qty' not in log_df.columns:
+        return {}
+    log_df_copy = log_df.copy() 
+    log_df_copy['Qty'] = pd.to_numeric(log_df_copy['Qty'], errors='coerce')
+    median_qtys = log_df_copy.groupby(['Department', 'Item'])['Qty'].median()
+    return median_qtys.to_dict()
+
+
+# --- Load historical data & Calculate suggestions & Pre-calculate maps ---
+log_data_for_analysis = load_indent_log_data() 
+top_items_map = calculate_top_items_per_dept_smarter(log_data_for_analysis, top_n=TOP_N_SUGGESTIONS, days_recency=90) 
 if not top_items_map: 
-    top_items_map = calculate_top_items_per_dept(log_data_for_suggestions, top_n=TOP_N_SUGGESTIONS)
+    top_items_map = calculate_top_items_per_dept(log_data_for_analysis, top_n=TOP_N_SUGGESTIONS)
 st.session_state['top_items_map'] = top_items_map
+
+st.session_state['last_ordered_dates_map'] = get_last_ordered_dates_map(log_data_for_analysis)
+st.session_state['median_quantities_map'] = get_median_order_quantities_map(log_data_for_analysis)
 
 
 # --- MRN Generation ---
@@ -379,6 +406,7 @@ with tab1:
             if item_name_to_add in current_items: 
                 st.toast(f"'{item_name_to_add}' is already in the list.", icon="ℹ️")
                 return
+
             unit_map = st.session_state.get("item_to_unit_lower", {})
             cat_map = st.session_state.get("item_to_category_lower", {})
             subcat_map = st.session_state.get("item_to_subcategory_lower", {})
@@ -387,9 +415,23 @@ with tab1:
             unit = unit if unit else "-"
             category = cat_map.get(item_lower)
             subcategory = subcat_map.get(item_lower)
-            new_id = f"item_{time.time_ns()}"
-            st.session_state.form_items.append({'id': new_id, 'item': item_name_to_add, 'qty': 1.0, 
-                                                 'note': '', 'unit': unit, 'category': category, 'subcategory': subcategory}) 
+
+            first_blank_row_index = -1
+            if st.session_state.form_items and st.session_state.form_items[0].get('item') is None:
+                first_blank_row_index = 0
+            
+            if first_blank_row_index == 0: 
+                st.session_state.form_items[0]['item'] = item_name_to_add
+                st.session_state.form_items[0]['qty'] = 1.0
+                st.session_state.form_items[0]['unit'] = unit
+                st.session_state.form_items[0]['category'] = category
+                st.session_state.form_items[0]['subcategory'] = subcategory
+                st.session_state.form_items[0]['note'] = '' 
+            else: 
+                new_id = f"item_{time.time_ns()}"
+                st.session_state.form_items.append({'id': new_id, 'item': item_name_to_add, 'qty': 1.0, 
+                                                     'note': '', 'unit': unit, 'category': category, 'subcategory': subcategory})
+
 
     def department_changed_callback():
         selected_dept = st.session_state.get("selected_dept")
@@ -408,7 +450,6 @@ with tab1:
             st.session_state.form_items[i]['subcategory'] = None
 
 
-    # Reverted to standard item_selected_callback for st.selectbox
     def item_selected_callback(item_id: str, selectbox_key: str):
         """Callback for when an item is selected using the standard dropdown."""
         unit_map = st.session_state.get("item_to_unit_lower", {})
@@ -487,13 +528,15 @@ with tab1:
     duplicates_found_dict = { item: count for item, count in duplicate_item_counts.items() if count > 1 }
     items_to_render = list(st.session_state.form_items)
     
-    log_df_for_last_ordered = load_indent_log_data() 
+    # Using pre-calculated maps from session state for performance
+    last_ordered_map = st.session_state.get('last_ordered_dates_map', {})
+    median_qty_map = st.session_state.get('median_quantities_map', {})
 
     for i, item_dict in enumerate(items_to_render):
         item_id = item_dict['id']
         qty_key = f"qty_{item_id}"
         note_key = f"note_{item_id}"
-        selectbox_key = f"item_select_{item_id}" # Key for standard selectbox
+        selectbox_key = f"item_select_{item_id}" 
         
         if qty_key in st.session_state: 
             try:
@@ -515,20 +558,18 @@ with tab1:
         duplicate_indicator = "⚠️ " if is_duplicate else ""
         expander_label = f"{duplicate_indicator}**{item_label}**"
 
-        with st.expander(label=expander_label, expanded=True): # Keep expanded
+        with st.expander(label=expander_label, expanded=True): 
             if is_duplicate: 
                 st.warning(f"DUPLICATE ITEM: '{current_item_value}' is selected multiple times.", icon="⚠️")
 
-            # Reverted to original layout with st.selectbox
             col1, col2, col3, col4 = st.columns([4, 3, 1, 1]) 
-            with col1: # Item Select & Cat/SubCat Info
+            with col1: 
                 available_options = st.session_state.get('available_items_for_dept', [""])
                 try: 
                     current_item_index = available_options.index(current_item_value) if current_item_value in available_options else 0
                 except ValueError: 
                     current_item_index = 0
                 
-                # Using st.selectbox again
                 st.selectbox( 
                     "Item Select", 
                     options=available_options, 
@@ -541,23 +582,18 @@ with tab1:
                 )
                 st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
                 
-                # "Last Ordered Date" for Items
-                current_dept_for_filter = st.session_state.get("selected_dept", "") # Get current dept for this scope
-                if current_item_value and not log_df_for_last_ordered.empty and current_dept_for_filter:
-                    item_log = log_df_for_last_ordered[
-                        (log_df_for_last_ordered['Item'] == current_item_value) &
-                        (log_df_for_last_ordered['Department'] == current_dept_for_filter) # Use correct variable
-                    ]
-                    if not item_log.empty:
-                        last_ordered_date = item_log['Timestamp'].max().strftime("%d-%b-%Y")
-                        st.caption(f"Last ordered by {current_dept_for_filter}: {last_ordered_date}")
+                current_dept_for_filter = st.session_state.get("selected_dept", "") 
+                if current_item_value and current_dept_for_filter:
+                    last_ordered_date_str = last_ordered_map.get((current_item_value, current_dept_for_filter))
+                    if last_ordered_date_str:
+                        st.caption(f"Last ordered by {current_dept_for_filter}: {last_ordered_date_str}")
                     else:
                         st.caption(f"Not recently ordered by {current_dept_for_filter}.")
 
-            with col2: # Note
+            with col2: 
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
             
-            with col3: # Quantity & Unit
+            with col3: 
                 st.number_input( 
                     "Quantity", 
                     min_value=0.001, 
@@ -568,26 +604,21 @@ with tab1:
                     label_visibility="collapsed" 
                 )
                 st.caption(f"Unit: {current_unit or '-'}") 
-                # Unusual Order Quantity Alert (can be placed here or after the number_input)
-                current_dept_for_alert = st.session_state.get("selected_dept", "") # Get current dept for this scope
-                if current_item_value and not log_df_for_last_ordered.empty and current_dept_for_alert:
-                    item_dept_orders = log_df_for_last_ordered[
-                        (log_df_for_last_ordered['Item'] == current_item_value) &
-                        (log_df_for_last_ordered['Department'] == current_dept_for_alert) # Use correct variable
-                    ]['Qty']
-                    # FIX: Check if item_dept_orders is not empty using .empty attribute
-                    if not item_dept_orders.empty:  # <<< THIS LINE WAS CORRECTED
-                        median_qty = item_dept_orders.median()
-                        if median_qty > 0: 
-                            if current_qty > median_qty * 3 : 
-                                st.warning(f"Qty {current_qty:.2f} is much higher than typical ({median_qty:.2f}).", icon="❗")
-                            elif current_qty < median_qty / 3 and current_qty > 0 : 
-                                 st.info(f"Qty {current_qty:.2f} is lower than typical ({median_qty:.2f}).", icon="ℹ️")
             
-            with col4: # Remove Button
+            with col4: 
                 if len(st.session_state.form_items) > 1: 
                     st.button("❌", key=f"remove_{item_id}", on_click=remove_item, args=(item_id,), help="Remove this item")
                 else: st.write("") 
+
+            # Moved Unusual Order Quantity Alert outside the columns, but still in expander
+            current_dept_for_alert = st.session_state.get("selected_dept", "") 
+            if current_item_value and current_dept_for_alert:
+                median_qty_val = median_qty_map.get((current_item_value, current_dept_for_alert))
+                if median_qty_val is not None and median_qty_val > 0: 
+                    if current_qty > median_qty_val * 3 : 
+                        st.warning(f"Quantity {current_qty:.2f} for '{current_item_value}' is much higher than typical ({median_qty_val:.2f}).", icon="❗")
+                    elif current_qty < median_qty_val / 3 and current_qty > 0 : 
+                            st.info(f"Quantity {current_qty:.2f} for '{current_item_value}' is lower than typical ({median_qty_val:.2f}).", icon="ℹ️")
 
 
     st.divider() 
@@ -664,7 +695,8 @@ with tab1:
                         log_sheet.append_rows(rows_to_add, value_input_option='USER_ENTERED')
                         load_indent_log_data.clear()
                         calculate_top_items_per_dept_smarter.clear() 
-                        # calculate_top_items_per_dept.clear() # This was the error source, original not cached
+                        get_last_ordered_dates_map.clear() 
+                        get_median_order_quantities_map.clear()
                     except gspread.exceptions.APIError as e: 
                         st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: 
