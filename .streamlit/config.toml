@@ -1,8 +1,9 @@
+# Theme 4 – Brazil Sunset
 [theme]
-primaryColor = "#2ECC71"
-backgroundColor = "#0C0F14"
-secondaryBackgroundColor = "#1E2229"
-textColor = "#E8F1F2"
+primaryColor = "#FF8C42"
+backgroundColor = "#111312"
+secondaryBackgroundColor = "#1F2220"
+textColor = "#FDFDFD"
 font = "sans serif"
 
 [server]
