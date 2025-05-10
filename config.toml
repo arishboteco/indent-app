@@ -1,0 +1,6 @@
+[theme]
+primaryColor="#2ECC71"
+backgroundColor="#0C0F14"
+secondaryBackgroundColor="#1E2229"
+textColor="#E8F1F2"
+font="sans serif"        # optional, defaults to system UI font
