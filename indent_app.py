@@ -598,7 +598,7 @@ with tab1:
                     "Quantity", 
                     min_value=0.001, 
                     value=current_qty,  
-                    step=0.01,       
+                    step=0.001,       
                     format="%.3f",   
                     key=qty_key, 
                     label_visibility="collapsed" 
