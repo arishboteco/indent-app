@@ -21,8 +21,10 @@ st.title("Material Indent Form")
 
 # Google Sheets setup & Credentials Handling
 scope: List[str] = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"] 
-TOP_N_SUGGESTIONS = 5 
+DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
+LOCATIONS = ["", "Boteco - Indiqube", "Boteco - Bagmane"]
+DEFAULT_HISTORICAL_LOCATION = "Boteco - Indiqube"
+TOP_N_SUGGESTIONS = 5
 # FUZZY_SEARCH_LIMIT = 3 # Not needed anymore
 
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
@@ -173,6 +175,7 @@ if 'last_dept' not in st.session_state: st.session_state.last_dept = None
 if 'submitted_data_for_summary' not in st.session_state: st.session_state.submitted_data_for_summary = None
 if 'num_items_to_add' not in st.session_state: st.session_state.num_items_to_add = 1
 if 'requested_by' not in st.session_state: st.session_state.requested_by = ""
+if 'last_location' not in st.session_state: st.session_state.last_location = None
 
 # --- Function to Load Log Data (Cached) ---
 @st.cache_data(ttl=300, show_spinner="Loading indent history...")
@@ -180,18 +183,20 @@ def load_indent_log_data() -> pd.DataFrame:
     if not log_sheet: return pd.DataFrame()
     try:
         records = log_sheet.get_all_records(head=1)
-        if not records: 
-            expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
+        expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note', 'Location']
+        if not records:
             return pd.DataFrame(columns=expected_cols)
         df = pd.DataFrame(records)
-        expected_cols = ['MRN', 'Timestamp', 'Requested By', 'Department', 'Date Required', 'Item', 'Qty', 'Unit', 'Note']
         for col in expected_cols:
             if col not in df.columns: df[col] = pd.NA
         if 'Timestamp' in df.columns: df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
         if 'Date Required' in df.columns: df['Date Required'] = pd.to_datetime(df['Date Required'], format='%d-%m-%Y', errors='coerce')
         if 'Qty' in df.columns: df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0.0)
-        for col in ['Item', 'Unit', 'Note', 'MRN', 'Department', 'Requested By']:
-            if col in df.columns: df[col] = df[col].astype(str).fillna('')
+        for col in ['Item', 'Unit', 'Note', 'MRN', 'Department', 'Requested By', 'Location']:
+            if col in df.columns: df[col] = df[col].astype(str).fillna('').str.strip()
+        # Default historical rows without a Location to the original outlet
+        if 'Location' in df.columns:
+            df.loc[df['Location'] == '', 'Location'] = DEFAULT_HISTORICAL_LOCATION
         display_cols = [col for col in expected_cols if col in df.columns]
         df = df[display_cols]
         df = df.dropna(subset=['Timestamp'])
@@ -205,68 +210,72 @@ def load_indent_log_data() -> pd.DataFrame:
 
 # --- Smarter Item Suggestions (Recency Weighted) ---
 @st.cache_data(ttl=3600, show_spinner="Analyzing history for suggestions...")
-def calculate_top_items_per_dept_smarter(log_df: pd.DataFrame, top_n: int = 7, days_recency: int = 90) -> Dict[str, List[str]]:
-    """Calculates top N items, giving weight to recent orders."""
-    if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns or 'Timestamp' not in log_df.columns:
+def calculate_top_items_per_dept_smarter(log_df: pd.DataFrame, top_n: int = 7, days_recency: int = 90) -> Dict[Tuple[str, str], List[str]]:
+    """Calculates top N items per (Department, Location), giving weight to recent orders."""
+    required_cols = {'Department', 'Location', 'Item', 'Timestamp'}
+    if log_df.empty or not required_cols.issubset(log_df.columns):
         return {}
-    
+
     cutoff_date = datetime.now() - timedelta(days=days_recency)
     recent_log_df = log_df[log_df['Timestamp'] >= cutoff_date].copy()
 
-    if recent_log_df.empty: 
+    if recent_log_df.empty:
         recent_log_df = log_df.copy()
 
-    recent_log_df.dropna(subset=['Department', 'Item'], inplace=True)
+    recent_log_df.dropna(subset=['Department', 'Location', 'Item'], inplace=True)
     recent_log_df = recent_log_df[recent_log_df['Item'].astype(str).str.strip() != '']
     recent_log_df['Item'] = recent_log_df['Item'].astype(str)
-    
+
     if recent_log_df.empty: return {}
     try:
-        top_items = recent_log_df.groupby('Department')['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
+        top_items = recent_log_df.groupby(['Department', 'Location'])['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
         return top_items.to_dict()
     except Exception as e:
         st.warning(f"Could not calculate smarter top items: {e}")
-        return calculate_top_items_per_dept(log_df, top_n) 
+        return calculate_top_items_per_dept(log_df, top_n)
 
 
 # --- Original Top Items (Fallback) ---
-def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[str, List[str]]:
-    """Calculates the top N most frequent items requested per department from all history."""
-    if log_df.empty or 'Department' not in log_df.columns or 'Item' not in log_df.columns: return {}
-    log_df_clean = log_df.dropna(subset=['Department', 'Item'])
+def calculate_top_items_per_dept(log_df: pd.DataFrame, top_n: int = 7) -> Dict[Tuple[str, str], List[str]]:
+    """Calculates the top N most frequent items per (Department, Location) from all history."""
+    required_cols = {'Department', 'Location', 'Item'}
+    if log_df.empty or not required_cols.issubset(log_df.columns): return {}
+    log_df_clean = log_df.dropna(subset=['Department', 'Location', 'Item'])
     log_df_clean = log_df_clean[log_df_clean['Item'].astype(str).str.strip() != '']
     log_df_clean['Item'] = log_df_clean['Item'].astype(str)
     if log_df_clean.empty: return {}
     try:
-        top_items = log_df_clean.groupby('Department')['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
+        top_items = log_df_clean.groupby(['Department', 'Location'])['Item'].apply(lambda x: x.value_counts().head(top_n).index.tolist())
         return top_items.to_dict()
-    except Exception as e: 
+    except Exception as e:
         st.warning(f"Could not calculate (original) top items: {e}")
         return {}
 
 # --- Pre-calculation for "Last Ordered Date" and "Median Quantity" ---
-@st.cache_data(ttl=300) 
-def get_last_ordered_dates_map(log_df: pd.DataFrame) -> Dict[Tuple[str, str], str]:
-    """Creates a map of (Item, Department) to last ordered date string."""
-    if log_df.empty or 'Item' not in log_df.columns or 'Department' not in log_df.columns or 'Timestamp' not in log_df.columns:
+@st.cache_data(ttl=300)
+def get_last_ordered_dates_map(log_df: pd.DataFrame) -> Dict[Tuple[str, str, str], str]:
+    """Creates a map of (Item, Department, Location) to last ordered date string."""
+    required_cols = {'Item', 'Department', 'Location', 'Timestamp'}
+    if log_df.empty or not required_cols.issubset(log_df.columns):
         return {}
-    idx = log_df.groupby(['Department', 'Item'])['Timestamp'].idxmax()
+    idx = log_df.groupby(['Department', 'Location', 'Item'])['Timestamp'].idxmax()
     last_ordered_df = log_df.loc[idx]
-    
+
     last_ordered_map = {}
     for _, row in last_ordered_df.iterrows():
-        last_ordered_map[(row['Item'], row['Department'])] = row['Timestamp'].strftime("%d-%b-%Y")
+        last_ordered_map[(row['Item'], row['Department'], row['Location'])] = row['Timestamp'].strftime("%d-%b-%Y")
     return last_ordered_map
 
 @st.cache_data(ttl=300)
-def get_median_order_quantities_map(log_df: pd.DataFrame) -> Dict[Tuple[str, str], float]:
-    """Creates a map of (Item, Department) to median order quantity."""
-    if log_df.empty or 'Item' not in log_df.columns or 'Department' not in log_df.columns or 'Qty' not in log_df.columns:
+def get_median_order_quantities_map(log_df: pd.DataFrame) -> Dict[Tuple[str, str, str], float]:
+    """Creates a map of (Item, Department, Location) to median order quantity."""
+    required_cols = {'Item', 'Department', 'Location', 'Qty'}
+    if log_df.empty or not required_cols.issubset(log_df.columns):
         return {}
-    log_df_copy = log_df.copy() 
+    log_df_copy = log_df.copy()
     log_df_copy['Qty'] = pd.to_numeric(log_df_copy['Qty'], errors='coerce')
-    median_qtys = log_df_copy.groupby(['Department', 'Item'])['Qty'].median()
-    return median_qtys.to_dict()
+    median_qtys = log_df_copy.groupby(['Department', 'Location', 'Item'])['Qty'].median()
+    return {(item, dept, loc): qty for (dept, loc, item), qty in median_qtys.to_dict().items()}
 
 
 # --- Load historical data & Calculate suggestions & Pre-calculate maps ---
@@ -317,8 +326,9 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     pdf.set_font("Helvetica", "", 11)
     pdf.cell(95, 6, f"MRN: {data.get('mrn', 'N/A')}", ln=0)
     pdf.cell(95, 6, f"Requested By: {data.get('requester', 'N/A')}", ln=1, align='R')
-    pdf.cell(95, 6, f"Department: {data.get('dept', 'N/A')}", ln=0)
+    pdf.cell(95, 6, f"Location: {data.get('location', 'N/A')}", ln=0)
     pdf.cell(95, 6, f"Date Required: {data.get('date', 'N/A')}", ln=1, align='R')
+    pdf.cell(95, 6, f"Department: {data.get('dept', 'N/A')}", ln=1)
     pdf.ln(6)
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_fill_color(230, 230, 230)
@@ -478,22 +488,32 @@ with tab1:
                 break
 
 
-    with st.container(border=True): 
+    with st.container(border=True):
         st.subheader("Indent Details")
-        col_head1, col_head2 = st.columns(2)
+        col_head1, col_head2, col_head3 = st.columns(3)
         with col_head1:
             last_dept = st.session_state.get('last_dept')
             dept_index = 0
-            try: 
+            try:
                 current_selection = st.session_state.get("selected_dept", last_dept)
                 if current_selection and current_selection in DEPARTMENTS:
                     dept_index = DEPARTMENTS.index(current_selection)
-            except (ValueError, TypeError): 
+            except (ValueError, TypeError):
                 dept_index = 0
             dept = st.selectbox( "Select Department*", DEPARTMENTS, index=dept_index, key="selected_dept", help="Select department first to filter items.", on_change=department_changed_callback )
         with col_head2:
+            last_loc = st.session_state.get('last_location')
+            loc_index = 0
+            try:
+                current_loc_selection = st.session_state.get("selected_location", last_loc)
+                if current_loc_selection and current_loc_selection in LOCATIONS:
+                    loc_index = LOCATIONS.index(current_loc_selection)
+            except (ValueError, TypeError):
+                loc_index = 0
+            location = st.selectbox( "Select Location*", LOCATIONS, index=loc_index, key="selected_location", help="Select the outlet this indent is for." )
+        with col_head3:
             default_date_val = st.session_state.get("selected_date", date.today())
-            if not isinstance(default_date_val, date): default_date_val = date.today() 
+            if not isinstance(default_date_val, date): default_date_val = date.today()
             delivery_date = st.date_input( "Date Required*", value=default_date_val, min_value=date.today(), format="DD/MM/YYYY", key="selected_date", help="Select the date materials are needed." )
         requester_name = st.text_input("Your Name / Requested By*", key="requested_by", value=st.session_state.requested_by, help="Enter the name of the person requesting the items.")
 
@@ -506,18 +526,20 @@ with tab1:
         department_changed_callback()
 
     selected_dept_for_suggestions = st.session_state.get("selected_dept")
-    if selected_dept_for_suggestions and 'top_items_map' in st.session_state:
-        suggestions = st.session_state.top_items_map.get(selected_dept_for_suggestions, [])
+    selected_loc_for_suggestions = st.session_state.get("selected_location")
+    if selected_dept_for_suggestions and selected_loc_for_suggestions and 'top_items_map' in st.session_state:
+        suggestions = st.session_state.top_items_map.get((selected_dept_for_suggestions, selected_loc_for_suggestions), [])
         items_already_in_form = [item_d.get('item') for item_d in st.session_state.form_items if item_d.get('item')]
         valid_suggestions = [item for item in suggestions if item not in items_already_in_form]
         if valid_suggestions:
-            st.subheader("✨ Quick Add Common Items (Recently Popular)") 
-            num_suggestion_cols = min(len(valid_suggestions), TOP_N_SUGGESTIONS, 5) 
+            st.subheader("✨ Quick Add Common Items (Recently Popular)")
+            num_suggestion_cols = min(len(valid_suggestions), TOP_N_SUGGESTIONS, 5)
             suggestion_cols = st.columns(num_suggestion_cols)
-            for idx, item_name_sugg in enumerate(valid_suggestions[:num_suggestion_cols]): 
+            sugg_key_prefix = f"suggest_{selected_dept_for_suggestions}_{selected_loc_for_suggestions}".replace(' ', '_').replace('/', '_')
+            for idx, item_name_sugg in enumerate(valid_suggestions[:num_suggestion_cols]):
                 col_index = idx % num_suggestion_cols
-                with suggestion_cols[col_index]: 
-                    st.button( f"+ {item_name_sugg}", key=f"suggest_{selected_dept_for_suggestions}_{item_name_sugg.replace(' ', '_').replace('/', '_')}", 
+                with suggestion_cols[col_index]:
+                    st.button( f"+ {item_name_sugg}", key=f"{sugg_key_prefix}_{item_name_sugg.replace(' ', '_').replace('/', '_')}",
                                on_click=add_suggested_item, args=(item_name_sugg,), use_container_width=True)
             st.divider()
 
@@ -582,13 +604,15 @@ with tab1:
                 )
                 st.caption(f"Category: {current_category or '-'} | Sub-Cat: {current_subcategory or '-'}")
                 
-                current_dept_for_filter = st.session_state.get("selected_dept", "") 
-                if current_item_value and current_dept_for_filter:
-                    last_ordered_date_str = last_ordered_map.get((current_item_value, current_dept_for_filter))
+                current_dept_for_filter = st.session_state.get("selected_dept", "")
+                current_loc_for_filter = st.session_state.get("selected_location", "")
+                if current_item_value and current_dept_for_filter and current_loc_for_filter:
+                    last_ordered_date_str = last_ordered_map.get((current_item_value, current_dept_for_filter, current_loc_for_filter))
+                    scope_label = f"{current_dept_for_filter} @ {current_loc_for_filter}"
                     if last_ordered_date_str:
-                        st.caption(f"Last ordered by {current_dept_for_filter}: {last_ordered_date_str}")
+                        st.caption(f"Last ordered by {scope_label}: {last_ordered_date_str}")
                     else:
-                        st.caption(f"Not recently ordered by {current_dept_for_filter}.")
+                        st.caption(f"Not recently ordered by {scope_label}.")
 
             with col2: 
                 st.text_input( "Note", value=current_note, key=note_key, placeholder="Optional note...", label_visibility="collapsed" )
@@ -611,13 +635,14 @@ with tab1:
                 else: st.write("") 
 
             # Moved Unusual Order Quantity Alert outside the columns, but still in expander
-            current_dept_for_alert = st.session_state.get("selected_dept", "") 
-            if current_item_value and current_dept_for_alert:
-                median_qty_val = median_qty_map.get((current_item_value, current_dept_for_alert))
-                if median_qty_val is not None and median_qty_val > 0: 
-                    if current_qty > median_qty_val * 3 : 
+            current_dept_for_alert = st.session_state.get("selected_dept", "")
+            current_loc_for_alert = st.session_state.get("selected_location", "")
+            if current_item_value and current_dept_for_alert and current_loc_for_alert:
+                median_qty_val = median_qty_map.get((current_item_value, current_dept_for_alert, current_loc_for_alert))
+                if median_qty_val is not None and median_qty_val > 0:
+                    if current_qty > median_qty_val * 3 :
                         st.warning(f"Quantity {current_qty:.2f} for '{current_item_value}' is much higher than typical ({median_qty_val:.2f}).", icon="❗")
-                    elif current_qty < median_qty_val / 3 and current_qty > 0 : 
+                    elif current_qty < median_qty_val / 3 and current_qty > 0 :
                             st.info(f"Quantity {current_qty:.2f} for '{current_item_value}' is lower than typical ({median_qty_val:.2f}).", icon="ℹ️")
 
 
@@ -632,17 +657,19 @@ with tab1:
         st.button("🔄 Clear Item List", on_click=clear_all_items, use_container_width=True)
 
     has_duplicates = bool(duplicates_found_dict)
-    has_valid_items = any(item.get('item') and float(item.get('qty', 0.0)) > 0 for item in st.session_state.form_items) 
-    current_dept_tab1_val = st.session_state.get("selected_dept", "") 
+    has_valid_items = any(item.get('item') and float(item.get('qty', 0.0)) > 0 for item in st.session_state.form_items)
+    current_dept_tab1_val = st.session_state.get("selected_dept", "")
+    current_location_tab1_val = st.session_state.get("selected_location", "")
     requester_name_filled = bool(st.session_state.get("requested_by", "").strip())
-    submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1_val or not requester_name_filled
+    submit_disabled = not has_valid_items or has_duplicates or not current_dept_tab1_val or not current_location_tab1_val or not requester_name_filled
     error_messages = []
     tooltip_message = "Submit the current indent request."
-    
+
     if not has_valid_items: error_messages.append("Add at least one valid item with quantity > 0.")
     if has_duplicates: error_messages.append(f"Remove duplicate items (marked with ⚠️): {', '.join(duplicates_found_dict.keys())}.")
-    if not current_dept_tab1_val: error_messages.append("Select a department (marked with *).") 
-    if not requester_name_filled: error_messages.append("Enter the requester's name (marked with *).") 
+    if not current_dept_tab1_val: error_messages.append("Select a department (marked with *).")
+    if not current_location_tab1_val: error_messages.append("Select a location (marked with *).")
+    if not requester_name_filled: error_messages.append("Enter the requester's name (marked with *).")
     st.divider()
     if error_messages:
         for msg in error_messages: st.warning(f"⚠️ {msg}")
@@ -675,18 +702,21 @@ with tab1:
         
         final_items_to_submit = sorted( final_items_to_submit_unsorted, key=lambda x: (str(x[4] or ''), str(x[5] or ''), str(x[0])) )
         requester = st.session_state.get("requested_by", "").strip()
-        current_dept_submit_val = st.session_state.get("selected_dept", "") 
+        current_dept_submit_val = st.session_state.get("selected_dept", "")
+        current_location_submit_val = st.session_state.get("selected_location", "")
 
         try:
             mrn = generate_mrn()
-            if "ERR" in mrn: 
+            if "ERR" in mrn:
                 st.error(f"Failed MRN ({mrn})."); st.stop()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             date_to_format = st.session_state.get("selected_date", date.today())
             formatted_date = date_to_format.strftime("%d-%m-%Y")
-            
-            rows_to_add = [[mrn, timestamp, requester, current_dept_submit_val, formatted_date, 
-                            item, f"{qty_val:.3f}", unit, note if note else "N/A"] 
+
+            # Column order in sheet: MRN, Timestamp, Requested By, Department, Date Required,
+            # Item, Qty, Unit, Note, Location
+            rows_to_add = [[mrn, timestamp, requester, current_dept_submit_val, formatted_date,
+                            item, f"{qty_val:.3f}", unit, note if note else "N/A", current_location_submit_val]
                            for item, qty_val, unit, note, cat, subcat in final_items_to_submit]
             
             if rows_to_add and log_sheet:
@@ -701,8 +731,9 @@ with tab1:
                         st.error(f"API Error: {e}."); st.stop()
                     except Exception as e: 
                         st.error(f"Submission error: {e}"); st.exception(e); st.stop()
-                st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_submit_val, 'date': formatted_date, 'requester': requester, 'items': final_items_to_submit}
+                st.session_state['submitted_data_for_summary'] = {'mrn': mrn, 'dept': current_dept_submit_val, 'location': current_location_submit_val, 'date': formatted_date, 'requester': requester, 'items': final_items_to_submit}
                 st.session_state['last_dept'] = current_dept_submit_val
+                st.session_state['last_location'] = current_location_submit_val
                 clear_all_items()
                 st.rerun()
         except Exception as e: 
@@ -713,7 +744,7 @@ with tab1:
         submitted_data = st.session_state['submitted_data_for_summary']
         st.success(f"Indent submitted! MRN: {submitted_data['mrn']}")
         st.balloons(); st.divider(); st.subheader("Submitted Indent Summary")
-        st.info(f"**MRN:** {submitted_data['mrn']} | **Dept:** {submitted_data['dept']} | **Reqd Date:** {submitted_data['date']} | **By:** {submitted_data.get('requester', 'N/A')}")
+        st.info(f"**MRN:** {submitted_data['mrn']} | **Location:** {submitted_data.get('location', 'N/A')} | **Dept:** {submitted_data['dept']} | **Reqd Date:** {submitted_data['date']} | **By:** {submitted_data.get('requester', 'N/A')}")
         
         submitted_df_data = [list(item_s) for item_s in submitted_data['items']]
         submitted_df = pd.DataFrame( submitted_df_data, columns=["Item", "Qty", "Unit", "Note", "Category", "Sub-Category"] )
@@ -738,6 +769,7 @@ with tab1:
         with col_btn2:
             try:
                 wa_text = (f"Indent Submitted:\nMRN: {submitted_data.get('mrn', 'N/A')}\n"
+                           f"Location: {submitted_data.get('location', 'N/A')}\n"
                            f"Department: {submitted_data.get('dept', 'N/A')}\n"
                            f"Requested By: {submitted_data.get('requester', 'N/A')}\n"
                            f"Date Required: {submitted_data.get('date', 'N/A')}\n\n"
@@ -763,6 +795,7 @@ with tab2:
         st.divider()
         with st.expander("Filter Options", expanded=True):
             dept_options = sorted([d for d in log_df_tab2['Department'].unique() if d and d != ''])
+            location_options = sorted([l for l in log_df_tab2['Location'].unique() if l and l != '']) if 'Location' in log_df_tab2.columns else []
             requester_options = sorted([r for r in log_df_tab2['Requested By'].unique() if r and r != '']) if 'Requested By' in log_df_tab2.columns else []
             
             min_ts = log_df_tab2['Date Required'].dropna().min()
@@ -785,8 +818,10 @@ with tab2:
                                            min_value=valid_end_min, max_value=max_date_log, 
                                            key="filt_end", format="DD/MM/YYYY")
             with filt_col2:
+                if location_options:
+                    selected_locations = st.multiselect("Location", options=location_options, default=[], key="filt_loc")
                 selected_depts = st.multiselect("Department", options=dept_options, default=[], key="filt_dept")
-                if requester_options: 
+                if requester_options:
                     selected_requesters = st.multiselect("Requested By", options=requester_options, default=[], key="filt_req")
             with filt_col3: 
                 mrn_search = st.text_input("MRN", key="filt_mrn", placeholder="e.g., MRN-005")
@@ -801,8 +836,11 @@ with tab2:
                               (filtered_df['Date Required'].dt.normalize() >= start_filter_ts) & 
                               (filtered_df['Date Required'].dt.normalize() <= end_filter_ts))
             filtered_df = filtered_df[date_filt_cond]
-            if st.session_state.filt_dept: 
+            if st.session_state.filt_dept:
                 filtered_df = filtered_df[filtered_df['Department'].isin(st.session_state.filt_dept)]
+            if location_options and st.session_state.get('filt_loc'):
+                if 'Location' in filtered_df.columns:
+                    filtered_df = filtered_df[filtered_df['Location'].isin(st.session_state.filt_loc)]
             if requester_options and 'filt_req' in st.session_state and st.session_state.filt_req: 
                 if 'Requested By' in filtered_df.columns: 
                     filtered_df = filtered_df[filtered_df['Requested By'].isin(st.session_state.filt_req)]
@@ -819,17 +857,18 @@ with tab2:
             filtered_df, 
             use_container_width=True, 
             hide_index=True,
-            column_config={ 
-                "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD/MM/YYYY"), 
-                "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"), 
-                "Requested By": st.column_config.TextColumn("Req. By"), 
-                "Qty": st.column_config.NumberColumn("Qty", format="%.3f"), 
-                "MRN": st.column_config.TextColumn("MRN"), 
-                "Department": st.column_config.TextColumn("Dept."), 
-                "Item": st.column_config.TextColumn("Item Name", width="medium"), 
-                "Unit": st.column_config.TextColumn("Unit"), 
-                "Note": st.column_config.TextColumn("Notes", width="large"), 
-            } 
+            column_config={
+                "Date Required": st.column_config.DateColumn("Date Reqd.", format="DD/MM/YYYY"),
+                "Timestamp": st.column_config.DatetimeColumn("Submitted", format="YYYY-MM-DD HH:mm"),
+                "Requested By": st.column_config.TextColumn("Req. By"),
+                "Qty": st.column_config.NumberColumn("Qty", format="%.3f"),
+                "MRN": st.column_config.TextColumn("MRN"),
+                "Department": st.column_config.TextColumn("Dept."),
+                "Location": st.column_config.TextColumn("Location"),
+                "Item": st.column_config.TextColumn("Item Name", width="medium"),
+                "Unit": st.column_config.TextColumn("Unit"),
+                "Note": st.column_config.TextColumn("Notes", width="large"),
+            }
         )
     else: 
         st.info("No indent records found or log is unavailable.")
