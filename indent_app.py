@@ -8,7 +8,7 @@ from datetime import datetime, date, timedelta
 import json
 from PIL import Image
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Tuple, Optional, DefaultDict, Union
+from typing import Any, Callable, Dict, List, Tuple, Optional, DefaultDict, Union
 import time
 from operator import itemgetter
 import urllib.parse
@@ -27,61 +27,153 @@ scope: List[str] = [
 DEPARTMENTS = ["", "Kitchen", "Bar", "Housekeeping", "Admin", "Maintenance"]
 LOCATIONS = ["", "Boteco - Indiqube", "Boteco - Bagmane"]
 TOP_N_SUGGESTIONS = 5
+SHEETS_RETRY_ATTEMPTS = 3
+SHEETS_RETRY_DELAY_SECONDS = 1.0
+EXPECTED_LOG_COLUMNS = [
+    "MRN",
+    "Location",
+    "Timestamp",
+    "Requested By",
+    "Department",
+    "Date Required",
+    "Item",
+    "Qty",
+    "Unit",
+    "Note",
+]
 # FUZZY_SEARCH_LIMIT = 3 # Not needed anymore
 
 
+class SheetsConnectionError(Exception):
+    """Raised when the app cannot establish the required Sheets connection."""
+
+
+class SheetsDataError(Exception):
+    """Raised when Google Sheets data is temporarily unavailable."""
+
+
+def is_retryable_sheets_error(error: Exception) -> bool:
+    request_error = getattr(gspread.exceptions, "RequestError", None)
+    retryable_types = (gspread.exceptions.APIError,)
+    if request_error:
+        retryable_types = retryable_types + (request_error,)
+    return isinstance(error, retryable_types)
+
+
+def describe_sheets_error(error: Exception) -> str:
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    error_text = str(error)
+
+    if status_code in (401, 403):
+        return (
+            "Google Sheets rejected the credentials or permissions. "
+            "Check the Streamlit gcp_service_account secret and confirm the "
+            "Indent Log spreadsheet is shared with that service account."
+        )
+    if status_code == 429:
+        return (
+            "Google Sheets API quota was reached. The app retried the request, "
+            "but Google is still throttling it."
+        )
+    if status_code and status_code >= 500:
+        return (
+            "Google Sheets returned a temporary server error after retries. "
+            "Reload the app in a minute."
+        )
+    if is_retryable_sheets_error(error):
+        return f"Temporary Google Sheets connection problem after retries: {error_text}"
+    return f"{type(error).__name__}: {error_text}"
+
+
+def with_sheets_retry(
+    operation: Callable[[], Any],
+    description: str,
+    attempts: int = SHEETS_RETRY_ATTEMPTS,
+) -> Any:
+    last_error: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as error:
+            if not is_retryable_sheets_error(error):
+                raise
+            last_error = error
+            if attempt < attempts:
+                time.sleep(SHEETS_RETRY_DELAY_SECONDS * attempt)
+
+    raise SheetsDataError(
+        f"Could not {description}. {describe_sheets_error(last_error)}"
+    ) from last_error
+
+
 @st.cache_resource(show_spinner="Connecting to Google Sheets...")
-def connect_gsheets():
-    # Function to connect to Google Sheets
+def connect_gsheets() -> Tuple[Client, Worksheet, Worksheet]:
     try:
         if "gcp_service_account" not in st.secrets:
-            st.error("Missing GCP credentials!")
-            return None, None, None
+            raise SheetsConnectionError(
+                "Missing Streamlit secret: gcp_service_account."
+            )
         json_creds_data: Any = st.secrets["gcp_service_account"]
         if isinstance(json_creds_data, str):
             try:
                 creds_dict: Dict[str, Any] = json.loads(json_creds_data)
             except json.JSONDecodeError:
-                st.error("Error parsing GCP credentials string.")
-                return None, None, None
+                raise SheetsConnectionError(
+                    "The gcp_service_account secret is not valid JSON."
+                )
         elif isinstance(json_creds_data, dict):
             creds_dict = json_creds_data
         else:
-            st.error("GCP credentials format error.")
-            return None, None, None
+            raise SheetsConnectionError(
+                "The gcp_service_account secret must be a JSON string or table."
+            )
         creds: ServiceAccountCredentials = (
             ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         )
         client: Client = gspread.authorize(creds)
         try:
-            indent_log_spreadsheet: Spreadsheet = client.open("Indent Log")
+            indent_log_spreadsheet: Spreadsheet = with_sheets_retry(
+                lambda: client.open("Indent Log"),
+                "open the Indent Log spreadsheet",
+            )
             log_sheet: Worksheet = indent_log_spreadsheet.sheet1
-            reference_sheet: Worksheet = indent_log_spreadsheet.worksheet("reference")
+            reference_sheet: Worksheet = with_sheets_retry(
+                lambda: indent_log_spreadsheet.worksheet("reference"),
+                "open the reference worksheet",
+            )
             return client, log_sheet, reference_sheet
         except gspread.exceptions.SpreadsheetNotFound:
-            st.error("Spreadsheet 'Indent Log' not found.")
-            return None, None, None
+            raise SheetsConnectionError(
+                "Spreadsheet 'Indent Log' was not found. Confirm the spreadsheet "
+                "name and service-account sharing."
+            )
         except gspread.exceptions.WorksheetNotFound:
-            st.error("Worksheet 'Sheet1' or 'reference' not found.")
-            return None, None, None
+            raise SheetsConnectionError(
+                "Worksheet 'Sheet1' or 'reference' was not found in Indent Log."
+            )
         except gspread.exceptions.APIError as e:
-            st.error(f"Google API Error: {e}")
-            return None, None, None
+            raise SheetsConnectionError(describe_sheets_error(e)) from e
     except json.JSONDecodeError:
-        st.error("Error parsing GCP credentials JSON.")
-        return None, None, None
-    except gspread.exceptions.RequestError as e:
-        st.error(f"Network error connecting to Google: {e}")
-        return None, None, None
+        raise SheetsConnectionError("Error parsing GCP credentials JSON.")
+    except SheetsDataError as e:
+        raise SheetsConnectionError(str(e)) from e
+    except SheetsConnectionError:
+        raise
     except Exception as e:
-        st.error(f"Google Sheets setup error: {e}")
-        st.exception(e)
-        return None, None, None
+        if is_retryable_sheets_error(e):
+            raise SheetsConnectionError(describe_sheets_error(e)) from e
+        raise SheetsConnectionError(f"Google Sheets setup error: {e}") from e
 
 
-client, log_sheet, reference_sheet = connect_gsheets()
-if not client or not log_sheet or not reference_sheet:
-    st.error("Failed Sheets connection.")
+try:
+    client, log_sheet, reference_sheet = connect_gsheets()
+except SheetsConnectionError as sheets_error:
+    st.error("The app could not connect to Google Sheets.")
+    st.info(str(sheets_error))
+    st.caption(
+        "If this is a temporary Google outage or quota issue, reload the app after a minute."
+    )
     st.stop()
 
 
@@ -95,7 +187,10 @@ def get_reference_data(
     item_to_subcategory_lower: Dict[str, str] = {}
     dept_to_items_map: DefaultDict[str, List[str]] = defaultdict(list)
     try:
-        all_data: List[List[str]] = _reference_sheet.get_all_values()
+        all_data: List[List[str]] = with_sheets_retry(
+            lambda: _reference_sheet.get_all_values(),
+            "load reference data",
+        )
         header_skipped: bool = False
         valid_departments = set(dept for dept in DEPARTMENTS if dept)
 
@@ -163,13 +258,17 @@ def get_reference_data(
             item_to_category_lower,
             item_to_subcategory_lower,
         )
-    except gspread.exceptions.APIError as e:
-        st.error(f"API Error loading reference: {e}")
+    except SheetsDataError:
+        raise
     except IndexError:
         st.error(
             "Error reading reference sheet. Ensure 5 columns: Item, Unit, Permitted Depts, Category, Sub-Category."
         )
     except Exception as e:
+        if is_retryable_sheets_error(e):
+            raise SheetsDataError(
+                f"Could not load reference data. {describe_sheets_error(e)}"
+            ) from e
         st.error(f"Error loading reference: {e}")
     return defaultdict(list), {}, {}, {}
 
@@ -179,13 +278,21 @@ if "data_loaded" not in st.session_state:
     st.session_state.data_loaded = False
 
 if not st.session_state.data_loaded and reference_sheet:
-    dept_map, unit_map, cat_map, subcat_map = get_reference_data(reference_sheet)
-    st.session_state["dept_items_map"] = dept_map
-    st.session_state["item_to_unit_lower"] = unit_map
-    st.session_state["item_to_category_lower"] = cat_map
-    st.session_state["item_to_subcategory_lower"] = subcat_map
-    st.session_state["available_items_for_dept"] = [""]
-    st.session_state.data_loaded = True
+    try:
+        dept_map, unit_map, cat_map, subcat_map = get_reference_data(reference_sheet)
+        st.session_state["dept_items_map"] = dept_map
+        st.session_state["item_to_unit_lower"] = unit_map
+        st.session_state["item_to_category_lower"] = cat_map
+        st.session_state["item_to_subcategory_lower"] = subcat_map
+        st.session_state["available_items_for_dept"] = [""]
+        st.session_state.data_loaded = True
+    except SheetsDataError as reference_error:
+        st.error("Reference item data is temporarily unavailable.")
+        st.info(str(reference_error))
+        st.caption(
+            "This usually means Google Sheets is slow, unavailable, or throttling requests."
+        )
+        st.stop()
 elif not reference_sheet and not st.session_state.data_loaded:
     st.error("Cannot load reference data.")
     st.session_state["dept_items_map"] = defaultdict(list)
@@ -237,35 +344,14 @@ def load_indent_log_data() -> pd.DataFrame:
     if not log_sheet:
         return pd.DataFrame()
     try:
-        records = log_sheet.get_all_records(head=1)
+        records = with_sheets_retry(
+            lambda: log_sheet.get_all_records(head=1),
+            "load indent history",
+        )
         if not records:
-            expected_cols = [
-                "MRN",
-                "Location",
-                "Timestamp",
-                "Requested By",
-                "Department",
-                "Date Required",
-                "Item",
-                "Qty",
-                "Unit",
-                "Note",
-            ]
-            return pd.DataFrame(columns=expected_cols)
+            return pd.DataFrame(columns=EXPECTED_LOG_COLUMNS)
         df = pd.DataFrame(records)
-        expected_cols = [
-            "MRN",
-            "Location",
-            "Timestamp",
-            "Requested By",
-            "Department",
-            "Date Required",
-            "Item",
-            "Qty",
-            "Unit",
-            "Note",
-        ]
-        for col in expected_cols:
+        for col in EXPECTED_LOG_COLUMNS:
             if col not in df.columns:
                 df[col] = pd.NA
         if "Timestamp" in df.columns:
@@ -279,16 +365,19 @@ def load_indent_log_data() -> pd.DataFrame:
         for col in ["Item", "Unit", "Note", "MRN", "Department", "Requested By"]:
             if col in df.columns:
                 df[col] = df[col].astype(str).fillna("")
-        display_cols = [col for col in expected_cols if col in df.columns]
+        display_cols = [col for col in EXPECTED_LOG_COLUMNS if col in df.columns]
         df = df[display_cols]
         df = df.dropna(subset=["Timestamp"])
         return df.sort_values(by="Timestamp", ascending=False, na_position="last")
-    except gspread.exceptions.APIError as e:
-        st.error(f"API Error loading log: {e}")
-        return pd.DataFrame()
+    except SheetsDataError:
+        raise
     except Exception as e:
+        if is_retryable_sheets_error(e):
+            raise SheetsDataError(
+                f"Could not load indent history. {describe_sheets_error(e)}"
+            ) from e
         st.error(f"Error loading/cleaning log: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=EXPECTED_LOG_COLUMNS)
 
 
 # --- Smarter Item Suggestions (Recency Weighted) ---
@@ -393,23 +482,24 @@ def get_median_order_quantities_map(
     return median_qtys.to_dict()
 
 
-# --- Load historical data & Calculate suggestions & Pre-calculate maps ---
-log_data_for_analysis = load_indent_log_data()
-top_items_map = calculate_top_items_per_dept_smarter(
-    log_data_for_analysis, top_n=TOP_N_SUGGESTIONS, days_recency=90
-)
-if not top_items_map:
-    top_items_map = calculate_top_items_per_dept(
-        log_data_for_analysis, top_n=TOP_N_SUGGESTIONS
+def update_history_derived_state(log_df: pd.DataFrame) -> None:
+    top_items_map = calculate_top_items_per_dept_smarter(
+        log_df, top_n=TOP_N_SUGGESTIONS, days_recency=90
     )
-st.session_state["top_items_map"] = top_items_map
+    if not top_items_map:
+        top_items_map = calculate_top_items_per_dept(
+            log_df, top_n=TOP_N_SUGGESTIONS
+        )
+    st.session_state["top_items_map"] = top_items_map
+    st.session_state["last_ordered_dates_map"] = get_last_ordered_dates_map(log_df)
+    st.session_state["median_quantities_map"] = get_median_order_quantities_map(log_df)
 
-st.session_state["last_ordered_dates_map"] = get_last_ordered_dates_map(
-    log_data_for_analysis
-)
-st.session_state["median_quantities_map"] = get_median_order_quantities_map(
-    log_data_for_analysis
-)
+
+# History-backed suggestions are optional so the app can render without loading
+# the full log sheet during startup.
+st.session_state.setdefault("top_items_map", {})
+st.session_state.setdefault("last_ordered_dates_map", {})
+st.session_state.setdefault("median_quantities_map", {})
 
 
 # --- MRN Generation ---
@@ -417,13 +507,13 @@ def generate_mrn() -> str:
     if not log_sheet:
         return f"MRN-ERR-NOSHEET"
     try:
-        all_mrns = log_sheet.col_values(1)
+        all_mrns = with_sheets_retry(
+            lambda: log_sheet.col_values(1),
+            "fetch existing MRNs",
+        )
         next_number = 1
-    except gspread.exceptions.APIError as e:
-        st.error(f"API Error fetching MRNs: {e}")
-        return f"MRN-ERR-API-{datetime.now().strftime('%H%M%S')}"
     except Exception as e:
-        st.error(f"Error fetching MRNs: {e}")
+        st.error(f"Error fetching MRNs: {describe_sheets_error(e)}")
         return f"MRN-ERR-EXC-{datetime.now().strftime('%H%M%S')}"
     if len(all_mrns) > 1:
         last_valid_num = 0
@@ -1075,19 +1165,20 @@ with tab1:
             if rows_to_add and log_sheet:
                 with st.spinner(f"Submitting indent {mrn}..."):
                     try:
-                        log_sheet.append_rows(
-                            rows_to_add, value_input_option="USER_ENTERED"
+                        with_sheets_retry(
+                            lambda: log_sheet.append_rows(
+                                rows_to_add, value_input_option="USER_ENTERED"
+                            ),
+                            "submit the indent rows",
                         )
                         load_indent_log_data.clear()
                         calculate_top_items_per_dept_smarter.clear()
                         get_last_ordered_dates_map.clear()
                         get_median_order_quantities_map.clear()
-                    except gspread.exceptions.APIError as e:
-                        st.error(f"API Error: {e}.")
-                        st.stop()
+                        if "indent_log_df" in st.session_state:
+                            del st.session_state["indent_log_df"]
                     except Exception as e:
-                        st.error(f"Submission error: {e}")
-                        st.exception(e)
+                        st.error(f"Submission error: {describe_sheets_error(e)}")
                         st.stop()
                 st.session_state["submitted_data_for_summary"] = {
                     "mrn": mrn,
@@ -1102,8 +1193,7 @@ with tab1:
                 clear_all_items()
                 st.rerun()
         except Exception as e:
-            st.error(f"Submission error: {e}")
-            st.exception(e)
+            st.error(f"Submission error: {describe_sheets_error(e)}")
 
     if st.session_state.get("submitted_data_for_summary"):
         submitted_data = st.session_state["submitted_data_for_summary"]
@@ -1186,8 +1276,23 @@ with tab1:
 # --- TAB 2: View Indents ---
 with tab2:
     st.subheader("View Past Indent Requests")
-    log_df_tab2 = load_indent_log_data()
-    if not log_df_tab2.empty:
+    refresh_history = st.button("Load / Refresh Indents", use_container_width=True)
+    st.caption(
+        "Past requests are loaded on demand so the new-indent form can stay online when Google Sheets is slow."
+    )
+    if refresh_history:
+        try:
+            with st.spinner("Loading indent history..."):
+                st.session_state["indent_log_df"] = load_indent_log_data()
+                update_history_derived_state(st.session_state["indent_log_df"])
+        except SheetsDataError as history_error:
+            st.error("Indent history is temporarily unavailable.")
+            st.info(str(history_error))
+
+    log_df_tab2 = st.session_state.get("indent_log_df")
+    if log_df_tab2 is None:
+        st.info("Click Load / Refresh Indents to fetch past requests.")
+    elif not log_df_tab2.empty:
         st.divider()
         with st.expander("Filter Options", expanded=True):
             dept_options = sorted(

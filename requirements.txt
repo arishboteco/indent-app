@@ -1,11 +1,11 @@
-streamlit
-pandas
-gspread>=5.0.0 # Specify minimum version known to have RequestError exception
-oauth2client
-Pillow
-fpdf2
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
-fuzzywuzzy
-python-Levenshtein
+streamlit==1.36.0
+pandas==2.2.2
+gspread==6.1.2
+oauth2client==4.1.3
+Pillow==10.4.0
+fpdf2==2.7.9
+google-api-python-client==2.137.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.25.1
