@@ -718,7 +718,8 @@ def create_indent_png(data: Dict[str, Any]) -> bytes:
 
     metadata_height = 250
     table_height = sum(row[2] for row in rows)
-    height = max(720, margin + 70 + metadata_height + table_height + margin)
+    # Keep short indents on an A4-style portrait canvas; longer tables grow as needed.
+    height = max(1754, margin + 70 + metadata_height + table_height + margin)
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
 
