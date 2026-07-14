@@ -1,17 +1,19 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import gspread
 from gspread import Client, Spreadsheet, Worksheet
 from fpdf import FPDF
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, date, timedelta
+import base64
 import json
-from PIL import Image
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 from collections import Counter, defaultdict
 from typing import Any, Callable, Dict, List, Tuple, Optional, DefaultDict, Union
 import time
 from operator import itemgetter
-import urllib.parse
 # from fuzzywuzzy import process as fuzzy_process # Removed for standard dropdown
 
 # --- Configuration & Setup ---
@@ -619,6 +621,293 @@ def create_indent_pdf(data: Dict[str, Any]) -> bytes:
     elif isinstance(pdf_output_data, str):
         return pdf_output_data.encode("latin-1")
     return pdf_output_data
+
+
+def _load_png_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    font_names = (
+        ["DejaVuSans-Bold.ttf", "arialbd.ttf"]
+        if bold
+        else ["DejaVuSans.ttf", "arial.ttf"]
+    )
+    for font_name in font_names:
+        try:
+            return ImageFont.truetype(font_name, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default(size=size)
+
+
+def _wrap_png_text(
+    draw: ImageDraw.ImageDraw,
+    value: Any,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> List[str]:
+    words = str(value if value not in (None, "") else "-").split()
+    if not words:
+        return ["-"]
+
+    lines: List[str] = []
+    current_line = words[0]
+    for word in words[1:]:
+        candidate = f"{current_line} {word}"
+        if draw.textlength(candidate, font=font) <= max_width:
+            current_line = candidate
+        else:
+            lines.append(current_line)
+            current_line = word
+    lines.append(current_line)
+    return lines
+
+
+def create_indent_png(data: Dict[str, Any]) -> bytes:
+    """Create a shareable PNG containing the same indent details as the PDF."""
+    width = 1240
+    margin = 60
+    table_width = width - (2 * margin)
+    col_widths = [520, 120, 160, table_width - 800]
+    line_height = 31
+    cell_padding = 12
+
+    title_font = _load_png_font(38, bold=True)
+    heading_font = _load_png_font(24, bold=True)
+    body_font = _load_png_font(23)
+    table_font = _load_png_font(22)
+    table_bold_font = _load_png_font(22, bold=True)
+
+    measuring_image = Image.new("RGB", (width, 1), "white")
+    measuring_draw = ImageDraw.Draw(measuring_image)
+    rows: List[Tuple[str, List[List[str]], int]] = []
+
+    rows.append(("header", [["Item"], ["Qty"], ["Unit"], ["Note"]], 58))
+    current_category = None
+    current_subcategory = None
+    items_data = data.get("items", [])
+    if not isinstance(items_data, list):
+        items_data = []
+
+    for item_tuple in items_data:
+        if len(item_tuple) < 6:
+            continue
+        item, qty_val, unit, note, category, subcategory = item_tuple
+        category = category or "Uncategorized"
+        subcategory = subcategory or "General"
+
+        if category != current_category:
+            rows.append(("category", [[f"Category: {category}"]], 52))
+            current_category = category
+            current_subcategory = None
+        if subcategory != current_subcategory:
+            rows.append(("subcategory", [[f"Sub-Category: {subcategory}"]], 46))
+            current_subcategory = subcategory
+
+        values = [str(item), f"{float(qty_val):.3f}", str(unit), note or "-"]
+        wrapped_cells = [
+            _wrap_png_text(
+                measuring_draw,
+                value,
+                table_font,
+                col_widths[index] - (2 * cell_padding),
+            )
+            for index, value in enumerate(values)
+        ]
+        row_height = max(len(lines) for lines in wrapped_cells) * line_height + (
+            2 * cell_padding
+        )
+        rows.append(("item", wrapped_cells, row_height))
+
+    metadata_height = 250
+    table_height = sum(row[2] for row in rows)
+    height = max(720, margin + 70 + metadata_height + table_height + margin)
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
+    dark = "#1F2937"
+    muted = "#4B5563"
+    border = "#9CA3AF"
+    header_fill = "#E5E7EB"
+    category_fill = "#D1D5DB"
+    subcategory_fill = "#F3F4F6"
+
+    draw.text(
+        (width / 2, margin),
+        "Material Indent Request",
+        font=title_font,
+        fill=dark,
+        anchor="ma",
+    )
+    y = margin + 70
+    left_metadata = [
+        f"MRN: {data.get('mrn', 'N/A')}",
+        f"Location: {data.get('location', 'N/A')}",
+        f"Department: {data.get('dept', 'N/A')}",
+    ]
+    right_metadata = [
+        f"Requested By: {data.get('requester', 'N/A')}",
+        f"Date Required: {data.get('date', 'N/A')}",
+    ]
+    for index, text_value in enumerate(left_metadata):
+        draw.text((margin, y + index * 42), text_value, font=body_font, fill=muted)
+    for index, text_value in enumerate(right_metadata):
+        draw.text(
+            (width - margin, y + index * 42),
+            text_value,
+            font=body_font,
+            fill=muted,
+            anchor="ra",
+        )
+
+    y += metadata_height - 70
+    for row_type, cells, row_height in rows:
+        if row_type in ("category", "subcategory"):
+            fill = category_fill if row_type == "category" else subcategory_fill
+            font = heading_font if row_type == "category" else table_bold_font
+            draw.rectangle(
+                (margin, y, margin + table_width, y + row_height),
+                fill=fill,
+                outline=border,
+                width=2,
+            )
+            draw.text(
+                (margin + cell_padding, y + row_height / 2),
+                cells[0][0],
+                font=font,
+                fill=dark,
+                anchor="lm",
+            )
+            y += row_height
+            continue
+
+        fill = header_fill if row_type == "header" else "white"
+        font = table_bold_font if row_type == "header" else table_font
+        x = margin
+        for index, cell_lines in enumerate(cells):
+            cell_width = col_widths[index]
+            draw.rectangle(
+                (x, y, x + cell_width, y + row_height),
+                fill=fill,
+                outline=border,
+                width=2,
+            )
+            if row_type == "header":
+                draw.text(
+                    (x + cell_width / 2, y + row_height / 2),
+                    cell_lines[0],
+                    font=font,
+                    fill=dark,
+                    anchor="mm",
+                )
+            else:
+                text_y = y + cell_padding
+                for line in cell_lines:
+                    draw.text(
+                        (x + cell_padding, text_y),
+                        line,
+                        font=font,
+                        fill=dark,
+                    )
+                    text_y += line_height
+            x += cell_width
+        y += row_height
+
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def render_png_share_button(png_data: bytes, file_name: str) -> None:
+    """Render a native file-share button with a download fallback."""
+    png_base64 = base64.b64encode(png_data).decode("ascii")
+    file_name_json = json.dumps(file_name)
+    png_base64_json = json.dumps(png_base64)
+    components.html(
+        f"""
+        <style>
+            body {{ margin: 0; font-family: sans-serif; }}
+            #share-button, #download-fallback {{
+                box-sizing: border-box;
+                width: 100%;
+                min-height: 40px;
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                text-align: center;
+            }}
+            #share-button {{
+                color: white;
+                background: #128C7E;
+                border: 1px solid #128C7E;
+            }}
+            #share-button:hover {{ background: #075E54; }}
+            #download-fallback {{
+                display: none;
+                padding: 9px 12px;
+                color: #1F2937;
+                background: white;
+                border: 1px solid #9CA3AF;
+                text-decoration: none;
+            }}
+            #share-status {{ margin: 6px 2px 0; color: #4B5563; font-size: 13px; }}
+        </style>
+        <button id="share-button" type="button">Share PNG to WhatsApp</button>
+        <a id="download-fallback">Download PNG instead</a>
+        <div id="share-status"></div>
+        <script>
+            try {{
+                const componentFrame = window.frameElement;
+                const currentPermissions = componentFrame.getAttribute("allow") || "";
+                if (!currentPermissions.includes("web-share")) {{
+                    componentFrame.setAttribute(
+                        "allow",
+                        `${{currentPermissions}}; web-share`
+                    );
+                }}
+                if (componentFrame.dataset.webShareReady !== "true") {{
+                    componentFrame.dataset.webShareReady = "true";
+                    componentFrame.srcdoc = componentFrame.srcdoc;
+                }}
+            }} catch (permissionError) {{
+                // The download fallback remains available if iframe access is blocked.
+            }}
+
+            const fileName = {file_name_json};
+            const pngBase64 = {png_base64_json};
+            const byteCharacters = atob(pngBase64);
+            const byteArray = new Uint8Array(byteCharacters.length);
+            for (let index = 0; index < byteCharacters.length; index++) {{
+                byteArray[index] = byteCharacters.charCodeAt(index);
+            }}
+            const pngFile = new File([byteArray], fileName, {{ type: "image/png" }});
+            const shareButton = document.getElementById("share-button");
+            const downloadFallback = document.getElementById("download-fallback");
+            const shareStatus = document.getElementById("share-status");
+            downloadFallback.href = URL.createObjectURL(pngFile);
+            downloadFallback.download = fileName;
+
+            shareButton.addEventListener("click", async () => {{
+                const canShareFile = navigator.share && navigator.canShare &&
+                    navigator.canShare({{ files: [pngFile] }});
+                if (!canShareFile) {{
+                    shareStatus.textContent = "File sharing is not supported in this browser.";
+                    downloadFallback.style.display = "block";
+                    return;
+                }}
+
+                try {{
+                    await navigator.share({{ files: [pngFile] }});
+                    shareStatus.textContent = "PNG sent to the share menu.";
+                }} catch (error) {{
+                    if (error.name !== "AbortError") {{
+                        shareStatus.textContent = "Could not open file sharing in this browser.";
+                        downloadFallback.style.display = "block";
+                    }}
+                }}
+            }});
+        </script>
+        """,
+        height=92,
+    )
 
 
 # --- UI Tabs ---
@@ -1266,15 +1555,15 @@ with tab1:
             f"**Total Submitted Items (sum of quantities):** {total_submitted_qty:.3f}"
         )
         st.divider()
+        location_for_filename = (
+            submitted_data.get("location", "UnknownLocation")
+            .replace(" ", "-")
+            .replace(".", "")
+        )
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             try:
                 pdf_data_bytes = create_indent_pdf(submitted_data)
-                location_for_filename = (
-                    submitted_data.get("location", "UnknownLocation")
-                    .replace(" ", "-")
-                    .replace(".", "")
-                )
                 st.download_button(
                     label="📄 Download PDF",
                     data=pdf_data_bytes,
@@ -1287,21 +1576,14 @@ with tab1:
                 st.exception(pdf_error)
         with col_btn2:
             try:
-                wa_text = (
-                    f"Indent Submitted:\nMRN: {submitted_data.get('mrn', 'N/A')}\n"
-                    f"Location: {submitted_data.get('location', 'N/A')}\n"
-                    f"Department: {submitted_data.get('dept', 'N/A')}\n"
-                    f"Requested By: {submitted_data.get('requester', 'N/A')}\n"
-                    f"Date Required: {submitted_data.get('date', 'N/A')}\n\n"
-                    "Please see attached PDF for item details."
+                png_data_bytes = create_indent_png(submitted_data)
+                png_file_name = (
+                    f"Indent_{location_for_filename}_{submitted_data['mrn']}.png"
                 )
-                encoded_text = urllib.parse.quote_plus(wa_text)
-                wa_url = f"https://wa.me/?text={encoded_text}"
-                st.link_button(
-                    "✅ Prepare WhatsApp Message", wa_url, use_container_width=True
-                )
+                render_png_share_button(png_data_bytes, png_file_name)
+                st.caption("On mobile, choose WhatsApp from the share menu.")
             except Exception as wa_e:
-                st.error(f"Could not create WhatsApp link: {wa_e}")
+                st.error(f"Could not create the WhatsApp image: {wa_e}")
 
         st.caption(
             "Your name in 'Requested By' will be remembered for the next indent."
