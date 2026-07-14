@@ -493,6 +493,9 @@ def update_history_derived_state(log_df: pd.DataFrame) -> None:
 st.session_state.setdefault("top_items_map", {})
 st.session_state.setdefault("last_ordered_dates_map", {})
 st.session_state.setdefault("median_quantities_map", {})
+st.session_state.setdefault("history_suggestions_loaded", False)
+st.session_state.setdefault("history_suggestions_attempted", False)
+st.session_state.setdefault("history_suggestions_error", None)
 
 
 # --- MRN Generation ---
@@ -841,6 +844,34 @@ with tab1:
 
     selected_dept_for_suggestions = st.session_state.get("selected_dept")
     selected_loc_for_suggestions = st.session_state.get("selected_location")
+    if (
+        selected_dept_for_suggestions
+        and selected_loc_for_suggestions
+        and not st.session_state.history_suggestions_loaded
+        and not st.session_state.history_suggestions_attempted
+    ):
+        st.session_state.history_suggestions_attempted = True
+        try:
+            with st.spinner("Loading smart suggestions..."):
+                suggestion_history = load_indent_log_data()
+                st.session_state["indent_log_df"] = suggestion_history
+                update_history_derived_state(suggestion_history)
+                st.session_state.history_suggestions_loaded = True
+                st.session_state.history_suggestions_error = None
+        except SheetsDataError as suggestions_error:
+            st.session_state.history_suggestions_error = str(suggestions_error)
+
+    if (
+        selected_dept_for_suggestions
+        and selected_loc_for_suggestions
+        and st.session_state.history_suggestions_error
+    ):
+        st.caption("Smart suggestions are temporarily unavailable.")
+        if st.button("Retry smart suggestions", use_container_width=False):
+            st.session_state.history_suggestions_attempted = False
+            st.session_state.history_suggestions_error = None
+            st.rerun()
+
     if (
         selected_dept_for_suggestions
         and selected_loc_for_suggestions
@@ -1293,6 +1324,9 @@ with tab2:
             with st.spinner("Loading indent history..."):
                 st.session_state["indent_log_df"] = load_indent_log_data()
                 update_history_derived_state(st.session_state["indent_log_df"])
+                st.session_state.history_suggestions_loaded = True
+                st.session_state.history_suggestions_attempted = True
+                st.session_state.history_suggestions_error = None
         except SheetsDataError as history_error:
             st.error("Indent history is temporarily unavailable.")
             st.info(str(history_error))
@@ -1321,7 +1355,7 @@ with tab2:
 
             min_ts = log_df_tab2["Date Required"].dropna().min()
             max_ts = log_df_tab2["Date Required"].dropna().max()
-            default_start = date.today() - pd.Timedelta(days=90)
+            default_start = date.today() - timedelta(days=90)
 
             min_date_log = min_ts.date() if pd.notna(min_ts) else default_start
             max_date_log = max_ts.date() if pd.notna(max_ts) else date.today()
